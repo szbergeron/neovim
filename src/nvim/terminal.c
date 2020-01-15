@@ -1031,7 +1031,7 @@ static bool send_mouse_event(Terminal *term, int c)
     if (mod_mask & (MOD_MASK_SHIFT | MOD_MASK_CTRL)) {
       scroll_redraw(direction, curwin->w_botline - curwin->w_topline);
     } else {
-      scroll_redraw(direction, 3L);
+      scroll_redraw(direction, 1L);
     }
 
     curwin->w_redr_status = true;

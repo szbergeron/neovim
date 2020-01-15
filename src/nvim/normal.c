@@ -4049,8 +4049,8 @@ static void nv_mousescroll(cmdarg_T *cap)
     if (mod_mask & (MOD_MASK_SHIFT | MOD_MASK_CTRL)) {
       (void)onepage(cap->arg ? FORWARD : BACKWARD, 1L);
     } else {
-      cap->count1 = 3;
-      cap->count0 = 3;
+      cap->count1 = 1;
+      cap->count0 = 1;
       nv_scroll_line(cap);
     }
   } else {
