@@ -31,8 +31,6 @@ function Parser:_on_lines(bufnr, _, start_row, old_stop_row, stop_row, old_byte_
 end
 
 local M = {
-  add_language=vim._ts_add_language,
-  inspect_language=vim._ts_inspect_language,
   parse_query = vim._ts_parse_query,
 }
 
@@ -45,12 +43,34 @@ setmetatable(M, {
    end
  })
 
-function M.create_parser(bufnr, ft, id)
+function M.require_language(lang, path)
+  if vim._ts_has_language(lang) then
+    return true
+  end
+  if path == nil then
+    local fname = 'parser/' .. lang .. '.*'
+    local paths = a.nvim_get_runtime_file(fname, false)
+    if #paths == 0 then
+      -- TODO(bfredl): help tag?
+      error("no parser for '"..lang.."' language")
+    end
+    path = paths[1]
+  end
+  vim._ts_add_language(path, lang)
+end
+
+function M.inspect_language(lang)
+  M.require_language(lang)
+  return vim._ts_inspect_language(lang)
+end
+
+function M.create_parser(bufnr, lang, id)
+  M.require_language(lang)
   if bufnr == 0 then
     bufnr = a.nvim_get_current_buf()
   end
-  local self = setmetatable({bufnr=bufnr, lang=ft, valid=false}, Parser)
-  self._parser = vim._create_ts_parser(ft)
+  local self = setmetatable({bufnr=bufnr, lang=lang, valid=false}, Parser)
+  self._parser = vim._create_ts_parser(lang)
   self.change_cbs = {}
   self:parse()
     -- TODO(bfredl): use weakref to self, so that the parser is free'd is no plugin is
@@ -93,11 +113,33 @@ end
 local Query = {}
 Query.__index = Query
 
+local magic_prefixes = {['\\v']=true, ['\\m']=true, ['\\M']=true, ['\\V']=true}
+local function check_magic(str)
+  if string.len(str) < 2 or magic_prefixes[string.sub(str,1,2)] then
+    return str
+  end
+  return '\\v'..str
+end
+
 function M.parse_query(lang, query)
+  M.require_language(lang)
   local self = setmetatable({}, Query)
-  self.query = vim._ts_parse_query(lang, query)
+  self.query = vim._ts_parse_query(lang, vim.fn.escape(query,'\\'))
   self.info = self.query:inspect()
   self.captures = self.info.captures
+  self.regexes = {}
+  for id,preds in pairs(self.info.patterns) do
+    local regexes = {}
+    for i, pred in ipairs(preds) do
+      if (pred[1] == "match?" and type(pred[2]) == "number"
+          and type(pred[3]) == "string") then
+        regexes[i] = vim.regex(check_magic(pred[3]))
+      end
+    end
+    if next(regexes) then
+      self.regexes[id] = regexes
+    end
+  end
   return self
 end
 
@@ -110,8 +152,16 @@ local function get_node_text(node, bufnr)
   return string.sub(line, start_col+1, end_col)
 end
 
-local function match_preds(match, preds, bufnr)
-  for _, pred in pairs(preds) do
+function Query:match_preds(match, pattern, bufnr)
+  local preds = self.info.patterns[pattern]
+  if not preds then
+    return true
+  end
+  local regexes = self.regexes[pattern]
+  for i, pred in pairs(preds) do
+    -- Here we only want to return if a predicate DOES NOT match, and
+    -- continue on the other case. This way unknown predicates will not be considered,
+    -- which allows some testing and easier user extensibility (#12173).
     if pred[1] == "eq?" then
       local node = match[pred[2]]
       local node_text = get_node_text(node, bufnr)
@@ -128,8 +178,18 @@ local function match_preds(match, preds, bufnr)
       if node_text ~= str or str == nil then
         return false
       end
-    else
-      return false
+    elseif pred[1] == "match?" then
+      if not regexes or not regexes[i] then
+        return false
+      end
+      local node = match[pred[2]]
+      local start_row, start_col, end_row, end_col = node:range()
+      if start_row ~= end_row then
+        return false
+      end
+      if not regexes[i]:match_line(bufnr, start_row, start_col, end_col) then
+        return false
+      end
     end
   end
   return true
@@ -143,8 +203,7 @@ function Query:iter_captures(node, bufnr, start, stop)
   local function iter()
     local capture, captured_node, match = raw_iter()
     if match ~= nil then
-      local preds = self.info.patterns[match.pattern]
-      local active = match_preds(match, preds, bufnr)
+      local active = self:match_preds(match, match.pattern, bufnr)
       match.active = active
       if not active then
         return iter() -- tail call: try next match
@@ -163,8 +222,7 @@ function Query:iter_matches(node, bufnr, start, stop)
   local function iter()
     local pattern, match = raw_iter()
     if match ~= nil then
-      local preds = self.info.patterns[pattern]
-      local active = (not preds) or match_preds(match, preds, bufnr)
+      local active = self:match_preds(match, pattern, bufnr)
       if not active then
         return iter() -- tail call: try next match
       end

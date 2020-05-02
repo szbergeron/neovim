@@ -23,6 +23,7 @@
 #include "nvim/digraph.h"
 #include "nvim/edit.h"
 #include "nvim/eval.h"
+#include "nvim/eval/userfunc.h"
 #include "nvim/ex_cmds.h"
 #include "nvim/ex_cmds2.h"
 #include "nvim/ex_docmd.h"
@@ -621,6 +622,16 @@ static int command_line_execute(VimState *state, int key)
       s->c = Ctrl_N;
     }
   }
+  if (compl_match_array || s->did_wild_list) {
+    if (s->c == Ctrl_E) {
+      s->res = nextwild(&s->xpc, WILD_CANCEL, WILD_NO_BEEP,
+                        s->firstc != '@');
+    } else if (s->c == Ctrl_Y) {
+      s->res = nextwild(&s->xpc, WILD_APPLY, WILD_NO_BEEP,
+                        s->firstc != '@');
+      s->c = Ctrl_E;
+    }
+  }
 
   // Hitting CR after "emenu Name.": complete submenu
   if (s->xpc.xp_context == EXPAND_MENUNAMES && p_wmnu
@@ -937,22 +948,28 @@ static int command_line_execute(VimState *state, int key)
   // - wildcard expansion is only done when the 'wildchar' key is really
   //   typed, not when it comes from a macro
   if ((s->c == p_wc && !s->gotesc && KeyTyped) || s->c == p_wcm) {
+    int options = WILD_NO_BEEP;
+    if (wim_flags[s->wim_index] & WIM_BUFLASTUSED) {
+      options |= WILD_BUFLASTUSED;
+    }
     if (s->xpc.xp_numfiles > 0) {       // typed p_wc at least twice
       // if 'wildmode' contains "list" may still need to list
       if (s->xpc.xp_numfiles > 1
           && !s->did_wild_list
-          && (wim_flags[s->wim_index] & WIM_LIST)) {
-        (void)showmatches(&s->xpc, false);
+          && ((wim_flags[s->wim_index] & WIM_LIST)
+              || (p_wmnu && (wim_flags[s->wim_index] & WIM_FULL) != 0))) {
+        (void)showmatches(&s->xpc, p_wmnu
+                          && ((wim_flags[s->wim_index] & WIM_LIST) == 0));
         redrawcmd();
         s->did_wild_list = true;
       }
 
       if (wim_flags[s->wim_index] & WIM_LONGEST) {
-        s->res = nextwild(&s->xpc, WILD_LONGEST, WILD_NO_BEEP,
-            s->firstc != '@');
+        s->res = nextwild(&s->xpc, WILD_LONGEST, options,
+                          s->firstc != '@');
       } else if (wim_flags[s->wim_index] & WIM_FULL) {
-        s->res = nextwild(&s->xpc, WILD_NEXT, WILD_NO_BEEP,
-            s->firstc != '@');
+        s->res = nextwild(&s->xpc, WILD_NEXT, options,
+                          s->firstc != '@');
       } else {
         s->res = OK;                 // don't insert 'wildchar' now
       }
@@ -963,11 +980,11 @@ static int command_line_execute(VimState *state, int key)
       // if 'wildmode' first contains "longest", get longest
       // common part
       if (wim_flags[0] & WIM_LONGEST) {
-        s->res = nextwild(&s->xpc, WILD_LONGEST, WILD_NO_BEEP,
-            s->firstc != '@');
+        s->res = nextwild(&s->xpc, WILD_LONGEST, options,
+                          s->firstc != '@');
       } else {
-        s->res = nextwild(&s->xpc, WILD_EXPAND_KEEP, WILD_NO_BEEP,
-            s->firstc != '@');
+        s->res = nextwild(&s->xpc, WILD_EXPAND_KEEP, options,
+                          s->firstc != '@');
       }
 
       // if interrupted while completing, behave like it failed
@@ -1004,11 +1021,11 @@ static int command_line_execute(VimState *state, int key)
           s->did_wild_list = true;
 
           if (wim_flags[s->wim_index] & WIM_LONGEST) {
-            nextwild(&s->xpc, WILD_LONGEST, WILD_NO_BEEP,
-                s->firstc != '@');
+            nextwild(&s->xpc, WILD_LONGEST, options,
+                     s->firstc != '@');
           } else if (wim_flags[s->wim_index] & WIM_FULL) {
-            nextwild(&s->xpc, WILD_NEXT, WILD_NO_BEEP,
-                s->firstc != '@');
+            nextwild(&s->xpc, WILD_NEXT, options,
+                     s->firstc != '@');
           }
         } else {
           vim_beep(BO_WILD);
@@ -2435,9 +2452,10 @@ redraw:
   /* make following messages go to the next line */
   msg_didout = FALSE;
   msg_col = 0;
-  if (msg_row < Rows - 1)
-    ++msg_row;
-  emsg_on_display = FALSE;              /* don't want os_delay() */
+  if (msg_row < Rows - 1) {
+    msg_row++;
+  }
+  emsg_on_display = false;              // don't want os_delay()
 
   if (got_int)
     ga_clear(&line_ga);
@@ -2699,7 +2717,7 @@ static bool color_cmdline(CmdlineInfo *colored_ccline)
     goto color_cmdline_error;
   }
   if (tv.v_type != VAR_LIST) {
-    PRINT_ERRMSG(_("E5400: Callback should return list"));
+    PRINT_ERRMSG("%s", _("E5400: Callback should return list"));
     goto color_cmdline_error;
   }
   if (tv.vval.v_list == NULL) {
@@ -3038,7 +3056,7 @@ void cmdline_screen_cleared(void)
   }
 }
 
-/// called by ui_flush, do what redraws neccessary to keep cmdline updated.
+/// called by ui_flush, do what redraws necessary to keep cmdline updated.
 void cmdline_ui_flush(void)
 {
   if (!ui_has(kUICmdline)) {
@@ -3788,6 +3806,12 @@ ExpandOne (
       return NULL;
   }
 
+  if (mode == WILD_CANCEL) {
+    ss = vim_strsave(orig_save);
+  } else if (mode == WILD_APPLY) {
+    ss =  vim_strsave(findex == -1 ? orig_save : xp->xp_files[findex]);
+  }
+
   /* free old names */
   if (xp->xp_numfiles != -1 && mode != WILD_ALL && mode != WILD_LONGEST) {
     FreeWild(xp->xp_numfiles, xp->xp_files);
@@ -3799,7 +3823,7 @@ ExpandOne (
   if (mode == WILD_FREE)        /* only release file name */
     return NULL;
 
-  if (xp->xp_numfiles == -1) {
+  if (xp->xp_numfiles == -1 && mode != WILD_APPLY && mode != WILD_CANCEL) {
     xfree(orig_save);
     orig_save = orig;
     orig_saved = TRUE;
@@ -4691,6 +4715,9 @@ ExpandFromContext (
     flags |= EW_KEEPALL;
   if (options & WILD_SILENT)
     flags |= EW_SILENT;
+  if (options & WILD_NOERROR) {
+    flags |= EW_NOERROR;
+  }
   if (options & WILD_ALLLINKS) {
     flags |= EW_ALLLINKS;
   }

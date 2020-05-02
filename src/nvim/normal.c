@@ -24,7 +24,7 @@
 #include "nvim/diff.h"
 #include "nvim/digraph.h"
 #include "nvim/edit.h"
-#include "nvim/eval.h"
+#include "nvim/eval/userfunc.h"
 #include "nvim/ex_cmds.h"
 #include "nvim/ex_cmds2.h"
 #include "nvim/ex_docmd.h"
@@ -615,7 +615,9 @@ static void normal_redraw_mode_message(NormalState *s)
 
     kmsg = keep_msg;
     keep_msg = NULL;
-    // showmode() will clear keep_msg, but we want to use it anyway
+    // Showmode() will clear keep_msg, but we want to use it anyway.
+    // First update w_topline.
+    setcursor();
     update_screen(0);
     // now reset it, otherwise it's put in the history again
     keep_msg = kmsg;
@@ -623,6 +625,7 @@ static void normal_redraw_mode_message(NormalState *s)
     xfree(kmsg);
   }
   setcursor();
+  ui_cursor_shape();                  // show different cursor shape
   ui_flush();
   if (msg_scroll || emsg_on_display) {
     os_delay(1000L, true);            // wait at least one second
@@ -760,7 +763,7 @@ static void normal_get_additional_char(NormalState *s)
     // because if it's put back with vungetc() it's too late to apply
     // mapping.
     no_mapping--;
-    while (enc_utf8 && lang && (s->c = vpeekc()) > 0
+    while (lang && (s->c = vpeekc()) > 0
            && (s->c >= 0x100 || MB_BYTE2LEN(vpeekc()) > 1)) {
       s->c = plain_vgetc();
       if (!utf_iscomposing(s->c)) {
@@ -1257,6 +1260,8 @@ static void normal_redraw(NormalState *s)
     maketitle();
   }
 
+  curbuf->b_last_used = time(NULL);
+
   // Display message after redraw. If an external message is still visible,
   // it contains the kept message already.
   if (keep_msg != NULL && !msg_ext_is_visible()) {
@@ -1711,13 +1716,12 @@ void do_pending_operator(cmdarg_T *cap, int old_col, bool gui_yank)
       }
     }
 
-    /* Include the trailing byte of a multi-byte char. */
-    if (has_mbyte && oap->inclusive) {
-      int l;
-
-      l = (*mb_ptr2len)(ml_get_pos(&oap->end));
-      if (l > 1)
+    // Include the trailing byte of a multi-byte char.
+    if (oap->inclusive) {
+      const int l = utfc_ptr2len(ml_get_pos(&oap->end));
+      if (l > 1) {
         oap->end.col += l - 1;
+      }
     }
     curwin->w_set_curswant = true;
 
@@ -1846,10 +1850,7 @@ void do_pending_operator(cmdarg_T *cap, int old_col, bool gui_yank)
         restart_edit = 0;
 
         // Restore linebreak, so that when the user edits it looks as before.
-        if (curwin->w_p_lbr != lbr_saved) {
-          curwin->w_p_lbr = lbr_saved;
-          get_op_vcol(oap, redo_VIsual_mode, false);
-        }
+        curwin->w_p_lbr = lbr_saved;
 
         // Reset finish_op now, don't want it set inside edit().
         finish_op = false;
@@ -1935,10 +1936,7 @@ void do_pending_operator(cmdarg_T *cap, int old_col, bool gui_yank)
         restart_edit = 0;
 
         // Restore linebreak, so that when the user edits it looks as before.
-        if (curwin->w_p_lbr != lbr_saved) {
-          curwin->w_p_lbr = lbr_saved;
-          get_op_vcol(oap, redo_VIsual_mode, false);
-        }
+        curwin->w_p_lbr = lbr_saved;
 
         op_insert(oap, cap->count1);
 
@@ -1964,18 +1962,15 @@ void do_pending_operator(cmdarg_T *cap, int old_col, bool gui_yank)
         CancelRedo();
       } else {
         // Restore linebreak, so that when the user edits it looks as before.
-        if (curwin->w_p_lbr != lbr_saved) {
-          curwin->w_p_lbr = lbr_saved;
-          get_op_vcol(oap, redo_VIsual_mode, false);
-        }
+        curwin->w_p_lbr = lbr_saved;
 
         op_replace(oap, cap->nchar);
       }
       break;
 
     case OP_FOLD:
-      VIsual_reselect = false;          /* don't reselect now */
-      foldCreate(oap->start.lnum, oap->end.lnum);
+      VIsual_reselect = false;          // don't reselect now
+      foldCreate(curwin, oap->start.lnum, oap->end.lnum);
       break;
 
     case OP_FOLDOPEN:
@@ -1993,9 +1988,9 @@ void do_pending_operator(cmdarg_T *cap, int old_col, bool gui_yank)
 
     case OP_FOLDDEL:
     case OP_FOLDDELREC:
-      VIsual_reselect = false;          /* don't reselect now */
-      deleteFold(oap->start.lnum, oap->end.lnum,
-          oap->op_type == OP_FOLDDELREC, oap->is_VIsual);
+      VIsual_reselect = false;          // don't reselect now
+      deleteFold(curwin, oap->start.lnum, oap->end.lnum,
+                 oap->op_type == OP_FOLDDELREC, oap->is_VIsual);
       break;
 
     case OP_NR_ADD:
@@ -2566,7 +2561,14 @@ do_mouse (
    * JUMP!
    */
   jump_flags = jump_to_mouse(jump_flags,
-      oap == NULL ? NULL : &(oap->inclusive), which_button);
+                             oap == NULL ? NULL : &(oap->inclusive),
+                             which_button);
+
+  // A click in the window toolbar has no side effects.
+  if (jump_flags & MOUSE_WINBAR) {
+    return false;
+  }
+
   moved = (jump_flags & CURSOR_MOVED);
   in_status_line = (jump_flags & IN_STATUS_LINE);
   in_sep_line = (jump_flags & IN_SEP_LINE);
@@ -2594,12 +2596,13 @@ do_mouse (
 
   /* Set global flag that we are extending the Visual area with mouse
    * dragging; temporarily minimize 'scrolloff'. */
-  if (VIsual_active && is_drag && p_so) {
-    /* In the very first line, allow scrolling one line */
-    if (mouse_row == 0)
+  if (VIsual_active && is_drag && get_scrolloff_value()) {
+    // In the very first line, allow scrolling one line
+    if (mouse_row == 0) {
       mouse_dragging = 2;
-    else
+    } else {
       mouse_dragging = 1;
+    }
   }
 
   /* When dragging the mouse above the window, scroll down. */
@@ -2906,17 +2909,17 @@ static void find_end_of_word(pos_T *pos)
  */
 static int get_mouse_class(char_u *p)
 {
-  int c;
-
-  if (has_mbyte && MB_BYTE2LEN(p[0]) > 1)
+  if (MB_BYTE2LEN(p[0]) > 1) {
     return mb_get_class(p);
+  }
 
-  c = *p;
-  if (c == ' ' || c == '\t')
+  const int c = *p;
+  if (c == ' ' || c == '\t') {
     return 0;
-
-  if (vim_iswordc(c))
+  }
+  if (vim_iswordc(c)) {
     return 2;
+  }
 
   /*
    * There are a few special cases where we want certain combinations of
@@ -3652,7 +3655,9 @@ static void nv_help(cmdarg_T *cap)
  */
 static void nv_addsub(cmdarg_T *cap)
 {
-  if (!VIsual_active && cap->oap->op_type == OP_NOP) {
+  if (bt_prompt(curbuf) && !prompt_curpos_editable()) {
+    clearopbeep(cap->oap);
+  } else if (!VIsual_active && cap->oap->op_type == OP_NOP) {
     prep_redo_cmd(cap);
     cap->oap->op_type = cap->cmdchar == Ctrl_A ? OP_NR_ADD : OP_NR_SUB;
     op_addsub(cap->oap, cap->count1, cap->arg);
@@ -4097,9 +4102,9 @@ void scroll_redraw(int up, long count)
     scrollup(count, true);
   else
     scrolldown(count, true);
-  if (p_so) {
-    /* Adjust the cursor position for 'scrolloff'.  Mark w_topline as
-     * valid, otherwise the screen jumps back at the end of the file. */
+  if (get_scrolloff_value()) {
+    // Adjust the cursor position for 'scrolloff'.  Mark w_topline as
+    // valid, otherwise the screen jumps back at the end of the file.
     cursor_correct();
     check_cursor_moved(curwin);
     curwin->w_valid |= VALID_TOPLINE;
@@ -4128,6 +4133,7 @@ void scroll_redraw(int up, long count)
   }
   if (curwin->w_cursor.lnum != prev_lnum)
     coladvance(curwin->w_curswant);
+  curwin->w_viewport_invalid = true;
   redraw_later(VALID);
 }
 
@@ -4143,8 +4149,8 @@ static void nv_zet(cmdarg_T *cap)
   int old_fen = curwin->w_p_fen;
   bool undo = false;
 
-  assert(p_siso <= INT_MAX);
-  int l_p_siso = (int)p_siso;
+  int l_p_siso = (int)get_sidescrolloff_value();
+  assert(l_p_siso <= INT_MAX);
 
   if (ascii_isdigit(nchar)) {
     /*
@@ -4348,11 +4354,12 @@ dozet:
   /* "zD": delete fold at cursor recursively */
   case 'd':
   case 'D':   if (foldManualAllowed(false)) {
-      if (VIsual_active)
+      if (VIsual_active) {
         nv_operator(cap);
-      else
-        deleteFold(curwin->w_cursor.lnum,
-            curwin->w_cursor.lnum, nchar == 'D', false);
+      } else {
+        deleteFold(curwin, curwin->w_cursor.lnum,
+                   curwin->w_cursor.lnum, nchar == 'D', false);
+      }
   }
     break;
 
@@ -4360,11 +4367,11 @@ dozet:
   case 'E':   if (foldmethodIsManual(curwin)) {
       clearFolding(curwin);
       changed_window_setting();
-  } else if (foldmethodIsMarker(curwin))
-      deleteFold((linenr_T)1, curbuf->b_ml.ml_line_count,
-          true, false);
-    else
+    } else if (foldmethodIsMarker(curwin)) {
+      deleteFold(curwin, (linenr_T)1, curbuf->b_ml.ml_line_count, true, false);
+    } else {
       EMSG(_("E352: Cannot erase folds with current 'foldmethod'"));
+    }
     break;
 
   /* "zn": fold none: reset 'foldenable' */
@@ -4466,16 +4473,16 @@ dozet:
   case 'r':
     curwin->w_p_fdl += cap->count1;
     {
-      int d = getDeepestNesting();
+      int d = getDeepestNesting(curwin);
       if (curwin->w_p_fdl >= d) {
         curwin->w_p_fdl = d;
       }
     }
     break;
 
-  /* "zR": open all folds */
-  case 'R':   curwin->w_p_fdl = getDeepestNesting();
-    old_fdl = -1;                       /* force an update */
+  case 'R':     //  "zR": open all folds
+    curwin->w_p_fdl = getDeepestNesting(curwin);
+    old_fdl = -1;                       // force an update
     break;
 
   case 'j':     /* "zj" move to next fold downwards */
@@ -4916,10 +4923,9 @@ static void nv_ident(cmdarg_T *cap)
         *p++ = '\\';
       /* When current byte is a part of multibyte character, copy all
        * bytes of that character. */
-      if (has_mbyte) {
-        size_t len = (size_t)((*mb_ptr2len)(ptr) - 1);
-        for (size_t i = 0; i < len && n > 0; ++i, --n)
-          *p++ = *ptr++;
+      const size_t len = (size_t)(utfc_ptr2len(ptr) - 1);
+      for (size_t i = 0; i < len && n > 0; i++, n--) {
+        *p++ = *ptr++;
       }
       *p++ = *ptr++;
     }
@@ -4930,11 +4936,11 @@ static void nv_ident(cmdarg_T *cap)
    * Execute the command.
    */
   if (cmdchar == '*' || cmdchar == '#') {
-    if (!g_cmd && (
-          has_mbyte ? vim_iswordp(mb_prevptr(get_cursor_line_ptr(), ptr)) :
-          vim_iswordc(ptr[-1])))
+    if (!g_cmd
+        && vim_iswordp(mb_prevptr(get_cursor_line_ptr(), ptr))) {
       STRCAT(buf, "\\>");
-    /* put pattern in search history */
+    }
+    // put pattern in search history
     init_history();
     add_to_history(HIST_SEARCH, (char_u *)buf, true, NUL);
     (void)normal_search(cap, cmdchar == '*' ? '/' : '?', (char_u *)buf, 0,
@@ -4977,9 +4983,8 @@ get_visual_text (
       *pp = ml_get_pos(&VIsual);
       *lenp = (size_t)curwin->w_cursor.col - (size_t)VIsual.col + 1;
     }
-    if (has_mbyte)
-      /* Correct the length to include the whole last character. */
-      *lenp += (size_t)((*mb_ptr2len)(*pp + (*lenp - 1)) - 1);
+    // Correct the length to include the whole last character.
+    *lenp += (size_t)(utfc_ptr2len(*pp + (*lenp - 1)) - 1);
   }
   reset_VIsual_and_resel();
   return true;
@@ -5197,11 +5202,7 @@ static void nv_left(cmdarg_T *cap)
           char_u *cp = get_cursor_pos_ptr();
 
           if (*cp != NUL) {
-            if (has_mbyte) {
-              curwin->w_cursor.col += (*mb_ptr2len)(cp);
-            } else {
-              curwin->w_cursor.col++;
-            }
+            curwin->w_cursor.col += utfc_ptr2len(cp);
           }
           cap->retval |= CA_NO_ADJ_OP_END;
         }
@@ -5255,6 +5256,13 @@ static void nv_down(cmdarg_T *cap)
     // In the cmdline window a <CR> executes the command.
     if (cmdwin_type != 0 && cap->cmdchar == CAR) {
       cmdwin_result = CAR;
+    } else if (bt_prompt(curbuf) && cap->cmdchar == CAR
+               && curwin->w_cursor.lnum == curbuf->b_ml.ml_line_count) {
+      // In a prompt buffer a <CR> in the last line invokes the callback.
+      invoke_prompt_callback();
+      if (restart_edit == 0) {
+        restart_edit = 'a';
+      }
     } else {
       cap->oap->motion_type = kMTLineWise;
       if (cursor_down(cap->count1, cap->oap->op_type == OP_NOP) == false) {
@@ -5847,6 +5855,10 @@ static void nv_undo(cmdarg_T *cap)
 static void nv_kundo(cmdarg_T *cap)
 {
   if (!checkclearopq(cap->oap)) {
+    if (bt_prompt(curbuf)) {
+      clearopbeep(cap->oap);
+      return;
+    }
     u_undo((int)cap->count1);
     curwin->w_set_curswant = true;
   }
@@ -5859,10 +5871,14 @@ static void nv_replace(cmdarg_T *cap)
 {
   char_u      *ptr;
   int had_ctrl_v;
-  long n;
 
-  if (checkclearop(cap->oap))
+  if (checkclearop(cap->oap)) {
     return;
+  }
+  if (bt_prompt(curbuf) && !prompt_curpos_editable()) {
+    clearopbeep(cap->oap);
+    return;
+  }
 
   /* get another character */
   if (cap->nchar == Ctrl_V) {
@@ -5913,7 +5929,7 @@ static void nv_replace(cmdarg_T *cap)
   /* Abort if not enough characters to replace. */
   ptr = get_cursor_pos_ptr();
   if (STRLEN(ptr) < (unsigned)cap->count1
-      || (has_mbyte && mb_charlen(ptr) < cap->count1)
+      || (mb_charlen(ptr) < cap->count1)
       ) {
     clearopbeep(cap->oap);
     return;
@@ -5955,71 +5971,44 @@ static void nv_replace(cmdarg_T *cap)
         NUL, 'r', NUL, had_ctrl_v, cap->nchar);
 
     curbuf->b_op_start = curwin->w_cursor;
-    if (has_mbyte) {
-      int old_State = State;
+    const int old_State = State;
 
-      if (cap->ncharC1 != 0)
-        AppendCharToRedobuff(cap->ncharC1);
-      if (cap->ncharC2 != 0)
-        AppendCharToRedobuff(cap->ncharC2);
+    if (cap->ncharC1 != 0) {
+      AppendCharToRedobuff(cap->ncharC1);
+    }
+    if (cap->ncharC2 != 0) {
+      AppendCharToRedobuff(cap->ncharC2);
+    }
 
-      /* This is slow, but it handles replacing a single-byte with a
-       * multi-byte and the other way around.  Also handles adding
-       * composing characters for utf-8. */
-      for (n = cap->count1; n > 0; --n) {
-        State = REPLACE;
-        if (cap->nchar == Ctrl_E || cap->nchar == Ctrl_Y) {
-          int c = ins_copychar(curwin->w_cursor.lnum
-              + (cap->nchar == Ctrl_Y ? -1 : 1));
-          if (c != NUL)
-            ins_char(c);
-          else
-            /* will be decremented further down */
-            ++curwin->w_cursor.col;
-        } else
-          ins_char(cap->nchar);
-        State = old_State;
-        if (cap->ncharC1 != 0)
-          ins_char(cap->ncharC1);
-        if (cap->ncharC2 != 0)
-          ins_char(cap->ncharC2);
-      }
-    } else {
-      /*
-       * Replace the characters within one line.
-       */
-      for (n = cap->count1; n > 0; --n) {
-        /*
-         * Get ptr again, because u_save and/or showmatch() will have
-         * released the line.  At the same time we let know that the
-         * line will be changed.
-         */
-        ptr = ml_get_buf(curbuf, curwin->w_cursor.lnum, true);
-        if (cap->nchar == Ctrl_E || cap->nchar == Ctrl_Y) {
-          int c = ins_copychar(curwin->w_cursor.lnum
-                               + (cap->nchar == Ctrl_Y ? -1 : 1));
-          if (c != NUL) {
-            assert(c >= 0 && c <= UCHAR_MAX);
-            ptr[curwin->w_cursor.col] = (char_u)c;
-          }
+    // This is slow, but it handles replacing a single-byte with a
+    // multi-byte and the other way around.  Also handles adding
+    // composing characters for utf-8.
+    for (long n = cap->count1; n > 0; n--) {
+      State = REPLACE;
+      if (cap->nchar == Ctrl_E || cap->nchar == Ctrl_Y) {
+        int c = ins_copychar(curwin->w_cursor.lnum
+                             + (cap->nchar == Ctrl_Y ? -1 : 1));
+        if (c != NUL) {
+          ins_char(c);
         } else {
-          assert(cap->nchar >= 0 && cap->nchar <= UCHAR_MAX);
-          ptr[curwin->w_cursor.col] = (char_u)cap->nchar;
+          // will be decremented further down
+          curwin->w_cursor.col++;
         }
-        if (p_sm && msg_silent == 0)
-          showmatch(cap->nchar);
-        ++curwin->w_cursor.col;
+      } else {
+        ins_char(cap->nchar);
       }
-
-      /* mark the buffer as changed and prepare for displaying */
-      changed_bytes(curwin->w_cursor.lnum,
-          (colnr_T)(curwin->w_cursor.col - cap->count1));
+      State = old_State;
+      if (cap->ncharC1 != 0) {
+        ins_char(cap->ncharC1);
+      }
+      if (cap->ncharC2 != 0) {
+        ins_char(cap->ncharC2);
+      }
     }
     --curwin->w_cursor.col;         /* cursor on the last replaced char */
     /* if the character on the left of the current cursor is a multi-byte
      * character, move two characters left */
-    if (has_mbyte)
-      mb_adjust_cursor();
+    mb_adjust_cursor();
     curbuf->b_op_end = curwin->w_cursor;
     curwin->w_set_curswant = true;
     set_last_insert(cap->nchar);
@@ -6226,7 +6215,11 @@ static void v_visop(cmdarg_T *cap)
  */
 static void nv_subst(cmdarg_T *cap)
 {
-  if (VIsual_active) {  /* "vs" and "vS" are the same as "vc" */
+  if (bt_prompt(curbuf) && !prompt_curpos_editable()) {
+    clearopbeep(cap->oap);
+    return;
+  }
+  if (VIsual_active) {  // "vs" and "vS" are the same as "vc"
     if (cap->cmdchar == 'S') {
       VIsual_mode_orig = VIsual_mode;
       VIsual_mode = 'V';
@@ -7164,10 +7157,15 @@ static void nv_tilde(cmdarg_T *cap)
 {
   if (!p_to
       && !VIsual_active
-      && cap->oap->op_type != OP_TILDE)
+      && cap->oap->op_type != OP_TILDE) {
+    if (bt_prompt(curbuf) && !prompt_curpos_editable()) {
+      clearopbeep(cap->oap);
+      return;
+    }
     n_swapchar(cap);
-  else
+  } else {
     nv_operator(cap);
+  }
 }
 
 /*
@@ -7179,6 +7177,12 @@ static void nv_operator(cmdarg_T *cap)
   int op_type;
 
   op_type = get_op_type(cap->cmdchar, cap->nchar);
+
+  if (bt_prompt(curbuf) && op_is_change(op_type)
+      && !prompt_curpos_editable()) {
+    clearopbeep(cap->oap);
+    return;
+  }
 
   if (op_type == cap->oap->op_type)         /* double operator works on lines */
     nv_lineop(cap);
@@ -7365,10 +7369,9 @@ static void adjust_cursor(oparg_T *oap)
       && (!VIsual_active || *p_sel == 'o')
       && !virtual_active() && (ve_flags & VE_ONEMORE) == 0
       ) {
-    --curwin->w_cursor.col;
-    /* prevent cursor from moving on the trail byte */
-    if (has_mbyte)
-      mb_adjust_cursor();
+    curwin->w_cursor.col--;
+    // prevent cursor from moving on the trail byte
+    mb_adjust_cursor();
     oap->inclusive = true;
   }
 }
@@ -7395,10 +7398,7 @@ static void adjust_for_sel(cmdarg_T *cap)
 {
   if (VIsual_active && cap->oap->inclusive && *p_sel == 'e'
       && gchar_cursor() != NUL && lt(VIsual, curwin->w_cursor)) {
-    if (has_mbyte)
-      inc_cursor();
-    else
-      ++curwin->w_cursor.col;
+    inc_cursor();
     cap->oap->inclusive = false;
   }
 }
@@ -7844,8 +7844,11 @@ static void nv_put_opt(cmdarg_T *cap, bool fix_indent)
       clearop(cap->oap);
       assert(cap->opcount >= 0);
       nv_diffgetput(true, (size_t)cap->opcount);
-    } else
+    } else {
       clearopbeep(cap->oap);
+    }
+  } else if (bt_prompt(curbuf) && !prompt_curpos_editable()) {
+    clearopbeep(cap->oap);
   } else {
     if (fix_indent) {
       dir = (cap->cmdchar == ']' && cap->nchar == 'p')
@@ -7857,8 +7860,9 @@ static void nv_put_opt(cmdarg_T *cap, bool fix_indent)
         ? BACKWARD : FORWARD;
     }
     prep_redo_cmd(cap);
-    if (cap->cmdchar == 'g')
+    if (cap->cmdchar == 'g') {
       flags |= PUT_CURSEND;
+    }
 
     if (VIsual_active) {
       /* Putting in Visual mode: The put text replaces the selected
@@ -7964,10 +7968,14 @@ static void nv_open(cmdarg_T *cap)
     clearop(cap->oap);
     assert(cap->opcount >= 0);
     nv_diffgetput(false, (size_t)cap->opcount);
-  } else if (VIsual_active) /* switch start and end of visual */
+  } else if (VIsual_active) {
+    // switch start and end of visual/
     v_swap_corners(cap->cmdchar);
-  else
+  } else if (bt_prompt(curbuf)) {
+    clearopbeep(cap->oap);
+  } else {
     n_opencmd(cap);
+  }
 }
 
 // Calculate start/end virtual columns for operating in block mode.
@@ -7988,9 +7996,7 @@ static void get_op_vcol(
   oap->motion_type = kMTBlockWise;
 
   // prevent from moving onto a trail byte
-  if (has_mbyte) {
-    mark_mb_adjustpos(curwin->w_buffer, &oap->end);
-  }
+  mark_mb_adjustpos(curwin->w_buffer, &oap->end);
 
   getvvcol(curwin, &(oap->start), &oap->start_vcol, NULL, &oap->end_vcol);
   if (!redo_VIsual_busy) {

@@ -831,10 +831,11 @@ return {
     },
     {
       full_name='foldcolumn', abbreviation='fdc',
-      type='number', scope={'window'},
+      type='string', scope={'window'},
       vi_def=true,
+      alloced=true,
       redraw={'current_window'},
-      defaults={if_true={vi=false}}
+      defaults={if_true={vi="0"}}
     },
     {
       full_name='foldenable', abbreviation='fen',
@@ -1989,7 +1990,7 @@ return {
     },
     {
       full_name='scrolloff', abbreviation='so',
-      type='number', scope={'global'},
+      type='number', scope={'global', 'window'},
       vi_def=true,
       vim=true,
       redraw={'all_windows'},
@@ -2228,10 +2229,10 @@ return {
     },
     {
       full_name='sidescrolloff', abbreviation='siso',
-      type='number', scope={'global'},
+      type='number', scope={'global', 'window'},
       vi_def=true,
       vim=true,
-      redraw={'current_buffer'},
+      redraw={'all_windows'},
       varname='p_siso',
       defaults={if_true={vi=0}}
     },
@@ -2489,6 +2490,12 @@ return {
       defaults={if_true={vi=false}}
     },
     {
+      full_name='termencoding', abbreviation='tenc',
+      type='string', scope={'global'},
+      vi_def=true,
+      defaults={if_true={vi=""}}
+    },
+    {
       full_name='termguicolors', abbreviation='tgc',
       type='bool', scope={'global'},
       vi_def=false,
@@ -2580,6 +2587,7 @@ return {
       type='bool', scope={'global'},
       vi_def=true,
       vim=true,
+      redraw={'ui_option'},
       varname='p_ttimeout',
       defaults={if_true={vi=true}}
     },
@@ -2587,6 +2595,7 @@ return {
       full_name='ttimeoutlen', abbreviation='ttm',
       type='number', scope={'global'},
       vi_def=true,
+      redraw={'ui_option'},
       varname='p_ttm',
       defaults={if_true={vi=50}}
     },

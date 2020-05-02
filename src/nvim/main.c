@@ -10,6 +10,7 @@
 #include <msgpack.h>
 
 #include "nvim/ascii.h"
+#include "nvim/channel.h"
 #include "nvim/vim.h"
 #include "nvim/main.h"
 #include "nvim/aucmd.h"
@@ -64,6 +65,9 @@
 #include "nvim/os/os.h"
 #include "nvim/os/time.h"
 #include "nvim/os/fileio.h"
+#ifdef WIN32
+# include "nvim/os/os_win_console.h"
+#endif
 #include "nvim/event/loop.h"
 #include "nvim/os/signal.h"
 #include "nvim/event/process.h"
@@ -204,7 +208,7 @@ void early_init(void)
   // Allocate the first window and buffer.
   // Can't do anything without it, exit when it fails.
   if (!win_alloc_first()) {
-    mch_exit(0);
+    os_exit(0);
   }
 
   init_yank();                  // init yank buffers
@@ -290,8 +294,8 @@ int main(int argc, char **argv)
   if (params.diff_mode && params.window_count == -1)
     params.window_count = 0;            /* open up to 3 windows */
 
-  /* Don't redraw until much later. */
-  ++RedrawingDisabled;
+  // Don't redraw until much later.
+  RedrawingDisabled++;
 
   setbuf(stdout, NULL);
 
@@ -336,8 +340,8 @@ int main(int argc, char **argv)
                  "matchstr(expand(\"<amatch>\"), "
                  "'\\c\\m" PROTO "\\%(.\\{-}//\\%(\\d\\+:\\)\\?\\)\\?\\zs.*'), "
                  // capture the working directory
-                 "{'cwd': get(matchlist(expand(\"<amatch>\"), "
-                 "'\\c\\m" PROTO "\\(.\\{-}\\)//'), 1, '')})"
+                 "{'cwd': expand(get(matchlist(expand(\"<amatch>\"), "
+                 "'\\c\\m" PROTO "\\(.\\{-}\\)//'), 1, ''))})"
                  "|endif");
   do_cmdline_cmd("augroup END");
 #undef PROTO
@@ -381,23 +385,17 @@ int main(int argc, char **argv)
     syn_maybe_on();
   }
 
-  /*
-   * Read all the plugin files.
-   * Only when compiled with +eval, since most plugins need it.
-   */
+  // Read all the plugin files.
   load_plugins();
 
   // Decide about window layout for diff mode after reading vimrc.
   set_window_layout(&params);
 
-  /*
-   * Recovery mode without a file name: List swap files.
-   * This uses the 'dir' option, therefore it must be after the
-   * initializations.
-   */
+  // Recovery mode without a file name: List swap files.
+  // Uses the 'dir' option, therefore it must be after the initializations.
   if (recoverymode && fname == NULL) {
-    recover_names(NULL, TRUE, 0, NULL);
-    mch_exit(0);
+    recover_names(NULL, true, 0, NULL);
+    os_exit(0);
   }
 
   // Set some option defaults after reading vimrc files.
@@ -428,17 +426,15 @@ int main(int argc, char **argv)
     set_vim_var_list(VV_OLDFILES, tv_list_alloc(0));
   }
 
-  /*
-   * "-q errorfile": Load the error file now.
-   * If the error file can't be read, exit before doing anything else.
-   */
+  // "-q errorfile": Load the error file now.
+  // If the error file can't be read, exit before doing anything else.
   handle_quickfix(&params);
 
-  /*
-   * Start putting things on the screen.
-   * Scroll screen down before drawing over it
-   * Clear screen now, so file message will not be cleared.
-   */
+  //
+  // Start putting things on the screen.
+  // Scroll screen down before drawing over it
+  // Clear screen now, so file message will not be cleared.
+  //
   starting = NO_BUFFERS;
   no_wait_return = false;
   if (!exmode_active) {
@@ -470,27 +466,26 @@ int main(int argc, char **argv)
 
   no_wait_return = true;
 
-  /*
-   * Create the requested number of windows and edit buffers in them.
-   * Also does recovery if "recoverymode" set.
-   */
+  //
+  // Create the requested number of windows and edit buffers in them.
+  // Also does recovery if "recoverymode" set.
+  //
   create_windows(&params);
   TIME_MSG("opening buffers");
 
-  /* clear v:swapcommand */
+  // Clear v:swapcommand
   set_vim_var_string(VV_SWAPCOMMAND, NULL, -1);
 
-  /* Ex starts at last line of the file */
-  if (exmode_active)
+  // Ex starts at last line of the file.
+  if (exmode_active) {
     curwin->w_cursor.lnum = curbuf->b_ml.ml_line_count;
+  }
 
   apply_autocmds(EVENT_BUFENTER, NULL, NULL, FALSE, curbuf);
   TIME_MSG("BufEnter autocommands");
   setpcmark();
 
-  /*
-   * When started with "-q errorfile" jump to first error now.
-   */
+  // When started with "-q errorfile" jump to first error now.
   if (params.edit_type == EDIT_QF) {
     qf_jump(NULL, 0, 0, FALSE);
     TIME_MSG("jump to first error");
@@ -502,26 +497,23 @@ int main(int argc, char **argv)
   xfree(cwd);
 
   if (params.diff_mode) {
-    /* set options in each window for "nvim -d". */
+    // set options in each window for "nvim -d".
     FOR_ALL_WINDOWS_IN_TAB(wp, curtab) {
       diff_win_options(wp, TRUE);
     }
   }
 
-  /*
-   * Shorten any of the filenames, but only when absolute.
-   */
-  shorten_fnames(FALSE);
+  // Shorten any of the filenames, but only when absolute.
+  shorten_fnames(false);
 
-  /*
-   * Need to jump to the tag before executing the '-c command'.
-   * Makes "vim -c '/return' -t main" work.
-   */
+  // Need to jump to the tag before executing the '-c command'.
+  // Makes "vim -c '/return' -t main" work.
   handle_tag(params.tagname);
 
-  /* Execute any "+", "-c" and "-S" arguments. */
-  if (params.n_commands > 0)
+  // Execute any "+", "-c" and "-S" arguments.
+  if (params.n_commands > 0) {
     exe_commands(&params);
+  }
 
   starting = 0;
 
@@ -532,9 +524,10 @@ int main(int argc, char **argv)
   // 'autochdir' has been postponed.
   do_autochdir();
 
-  /* start in insert mode */
-  if (p_im)
-    need_start_insertmode = TRUE;
+  // start in insert mode
+  if (p_im) {
+    need_start_insertmode = true;
+  }
 
   set_vim_var_nr(VV_VIM_DID_ENTER, 1L);
   apply_autocmds(EVENT_VIMENTER, NULL, NULL, false, curbuf);
@@ -550,18 +543,19 @@ int main(int argc, char **argv)
   // main loop.
   set_reg_var(get_default_register_name());
 
-  /* When a startup script or session file setup for diff'ing and
-   * scrollbind, sync the scrollbind now. */
+  // When a startup script or session file setup for diff'ing and
+  // scrollbind, sync the scrollbind now.
   if (curwin->w_p_diff && curwin->w_p_scb) {
     update_topline();
     check_scrollbind((linenr_T)0, 0L);
     TIME_MSG("diff scrollbinding");
   }
 
-  /* If ":startinsert" command used, stuff a dummy command to be able to
-   * call normal_cmd(), which will then start Insert mode. */
-  if (restart_edit != 0)
+  // If ":startinsert" command used, stuff a dummy command to be able to
+  // call normal_cmd(), which will then start Insert mode.
+  if (restart_edit != 0) {
     stuffcharReadbuff(K_NOP);
+  }
 
   // WORKAROUND(mhi): #3023
   if (cb_flags & CB_UNNAMEDMASK) {
@@ -571,15 +565,38 @@ int main(int argc, char **argv)
   TIME_MSG("before starting main loop");
   ILOG("starting main loop");
 
-  /*
-   * Call the main command loop.  This never returns.
-   */
+  // Main loop: never returns.
   normal_enter(false, false);
 
 #if defined(WIN32) && !defined(MAKE_LIB)
   xfree(argv);
 #endif
   return 0;
+}
+
+void os_exit(int r)
+  FUNC_ATTR_NORETURN
+{
+  exiting = true;
+
+  ui_flush();
+  ui_call_stop();
+  ml_close_all(true);           // remove all memfiles
+
+  if (!event_teardown() && r == 0) {
+    r = 1;  // Exit with error if main_loop did not teardown gracefully.
+  }
+  if (input_global_fd() >= 0) {
+    stream_set_blocking(input_global_fd(), true);  // normalize stream (#2598)
+  }
+
+  ILOG("Nvim exit: %d", r);
+
+#ifdef EXITFREE
+  free_all_mem();
+#endif
+
+  exit(r);
 }
 
 /// Exit properly
@@ -676,7 +693,7 @@ void getout(int exitval)
     garbage_collect(false);
   }
 
-  mch_exit(exitval);
+  os_exit(exitval);
 }
 
 /// Gets the integer value of a numeric command line argument if given,
@@ -796,10 +813,10 @@ static void command_line_scan(mparm_T *parmp)
           // "--cmd <cmd>" execute cmd before vimrc
           if (STRICMP(argv[0] + argv_idx, "help") == 0) {
             usage();
-            mch_exit(0);
+            os_exit(0);
           } else if (STRICMP(argv[0] + argv_idx, "version") == 0) {
             version();
-            mch_exit(0);
+            os_exit(0);
           } else if (STRICMP(argv[0] + argv_idx, "api-info") == 0) {
             FileDescriptor fp;
             const int fof_ret = file_open_fd(&fp, STDOUT_FILENO,
@@ -822,7 +839,7 @@ static void command_line_scan(mparm_T *parmp)
             if (ff_ret < 0) {
               msgpack_file_write_error(ff_ret);
             }
-            mch_exit(0);
+            os_exit(0);
           } else if (STRICMP(argv[0] + argv_idx, "headless") == 0) {
             headless_mode = true;
           } else if (STRICMP(argv[0] + argv_idx, "embed") == 0) {
@@ -888,7 +905,7 @@ static void command_line_scan(mparm_T *parmp)
         case '?':    // "-?" give help message (for MS-Windows)
         case 'h': {  // "-h" give help message
           usage();
-          mch_exit(0);
+          os_exit(0);
         }
         case 'H': {  // "-H" start in Hebrew mode: rl + hkmap set.
           p_hkmap = true;
@@ -985,7 +1002,7 @@ static void command_line_scan(mparm_T *parmp)
         }
         case 'v': {
           version();
-          mch_exit(0);
+          os_exit(0);
         }
         case 'V': {  // "-V{N}" Verbose level
           // default is 10: a little bit verbose
@@ -1113,20 +1130,14 @@ scripterror:
                            _("Attempt to open script file again: \"%s %s\"\n"),
                            argv[-1], argv[0]);
               mch_errmsg((const char *)IObuff);
-              mch_exit(2);
+              os_exit(2);
             }
             int error;
             if (strequal(argv[0], "-")) {
               const int stdin_dup_fd = os_dup(STDIN_FILENO);
 #ifdef WIN32
               // Replace the original stdin with the console input handle.
-              close(STDIN_FILENO);
-              const HANDLE conin_handle =
-                CreateFile("CONIN$", GENERIC_READ | GENERIC_WRITE,
-                           FILE_SHARE_READ, (LPSECURITY_ATTRIBUTES)NULL,
-                           OPEN_EXISTING, 0, (HANDLE)NULL);
-              const int conin_fd = _open_osfhandle(conin_handle, _O_RDONLY);
-              assert(conin_fd == STDIN_FILENO);
+              os_replace_stdin_to_conin();
 #endif
               FileDescriptor *const stdin_dup = file_open_fd_new(
                   &error, stdin_dup_fd, kFileReadOnly|kFileNonBlocking);
@@ -1138,7 +1149,7 @@ scripterror:
                            _("Cannot open for reading: \"%s\": %s\n"),
                            argv[0], os_strerror(error));
               mch_errmsg((const char *)IObuff);
-              mch_exit(2);
+              os_exit(2);
             }
             save_typebuf();
             break;
@@ -1176,7 +1187,7 @@ scripterror:
               mch_errmsg(_("Cannot open for script output: \""));
               mch_errmsg(argv[0]);
               mch_errmsg("\"\n");
-              mch_exit(2);
+              os_exit(2);
             }
             break;
           }
@@ -1383,7 +1394,7 @@ static void handle_quickfix(mparm_T *paramp)
     vim_snprintf((char *)IObuff, IOSIZE, "cfile %s", p_ef);
     if (qf_init(NULL, p_ef, p_efm, true, IObuff, p_menc) < 0) {
       msg_putchar('\n');
-      mch_exit(3);
+      os_exit(3);
     }
     TIME_MSG("reading errorfile");
   }
@@ -1946,7 +1957,7 @@ static void mainerr(const char *errstr, const char *str)
   mch_errmsg(prgname);
   mch_errmsg(" -h\"\n");
 
-  mch_exit(1);
+  os_exit(1);
 }
 
 /// Prints version information for "nvim -v" or "nvim --version".

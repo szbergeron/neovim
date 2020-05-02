@@ -130,26 +130,33 @@ endfunc
 func Test_spellinfo()
   throw 'skipped: Nvim does not support enc=latin1'
   new
+  let runtime = substitute($VIMRUNTIME, '\\', '/', 'g')
 
   set enc=latin1 spell spelllang=en
-  call assert_match("^\nfile: .*/runtime/spell/en.latin1.spl\n$", execute('spellinfo'))
+  call assert_match("^\nfile: " .. runtime .. "/spell/en.latin1.spl\n$", execute('spellinfo'))
 
   set enc=cp1250 spell spelllang=en
-  call assert_match("^\nfile: .*/runtime/spell/en.ascii.spl\n$", execute('spellinfo'))
+  call assert_match("^\nfile: " .. runtime .. "/spell/en.ascii.spl\n$", execute('spellinfo'))
 
   set enc=utf-8 spell spelllang=en
-  call assert_match("^\nfile: .*/runtime/spell/en.utf-8.spl\n$", execute('spellinfo'))
+  call assert_match("^\nfile: " .. runtime .. "/spell/en.utf-8.spl\n$", execute('spellinfo'))
 
   set enc=latin1 spell spelllang=en_us,en_nz
   call assert_match("^\n" .
-                 \  "file: .*/runtime/spell/en.latin1.spl\n" .
-                 \  "file: .*/runtime/spell/en.latin1.spl\n$", execute('spellinfo'))
+                 \  "file: " .. runtime .. "/spell/en.latin1.spl\n" .
+                 \  "file: " .. runtime .. "/spell/en.latin1.spl\n$", execute('spellinfo'))
 
   set spell spelllang=
   call assert_fails('spellinfo', 'E756:')
 
   set nospell spelllang=en
   call assert_fails('spellinfo', 'E756:')
+
+  call assert_fails('set spelllang=foo/bar', 'E474:')
+  call assert_fails('set spelllang=foo\ bar', 'E474:')
+  call assert_fails("set spelllang=foo\\\nbar", 'E474:')
+  call assert_fails("set spelllang=foo\\\rbar", 'E474:')
+  call assert_fails("set spelllang=foo+bar", 'E474:')
 
   set enc& spell& spelllang&
   bwipe
@@ -384,6 +391,11 @@ func Test_zz_sal_and_addition()
   set spl=Xtest_ca.latin1.spl
   call assert_equal("elequint", FirstSpellWord())
   call assert_equal("elekwint", SecondSpellWord())
+endfunc
+
+func Test_spellfile_value()
+  set spellfile=Xdir/Xtest.latin1.add
+  set spellfile=Xdir/Xtest.utf-8.add,Xtest_other.add
 endfunc
 
 func Test_region_error()

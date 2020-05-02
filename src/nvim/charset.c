@@ -8,7 +8,6 @@
 #include <assert.h>
 #include <string.h>
 #include <wctype.h>
-#include <wchar.h>  // for towupper() and towlower()
 #include <inttypes.h>
 
 #include "nvim/vim.h"
@@ -1571,6 +1570,7 @@ char_u* skiptohex(char_u *q)
 ///
 /// @return Pointer to the next whitespace or NUL character.
 char_u *skiptowhite(const char_u *p)
+  FUNC_ATTR_NONNULL_ALL
 {
   while (*p != ' ' && *p != '\t' && *p != NUL) {
     p++;

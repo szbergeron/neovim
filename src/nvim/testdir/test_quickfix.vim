@@ -1510,6 +1510,13 @@ func Test_setqflist_invalid_nr()
   call setqflist([], ' ', {'nr' : $XXX_DOES_NOT_EXIST})
 endfunc
 
+func Test_setqflist_user_sets_buftype()
+  call setqflist([{'text': 'foo'}, {'text': 'bar'}])
+  set buftype=quickfix
+  call setqflist([], 'a')
+  enew
+endfunc
+
 func Test_quickfix_set_list_with_act()
   call XquickfixSetListWithAct('c')
   call XquickfixSetListWithAct('l')
@@ -3309,6 +3316,14 @@ func Test_lvimgrep_crash()
     au!
   augroup END
   enew | only
+endfunc
+
+func Test_lvimgrep_crash2()
+  au BufNewFile x sfind
+  call assert_fails('lvimgrep x x', 'E480:')
+  call assert_fails('lvimgrep x x x', 'E480:')
+
+  au! BufNewFile
 endfunc
 
 " Test for the position of the quickfix and location list window

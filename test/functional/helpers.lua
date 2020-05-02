@@ -15,9 +15,9 @@ local check_cores = global_helpers.check_cores
 local check_logs = global_helpers.check_logs
 local dedent = global_helpers.dedent
 local eq = global_helpers.eq
-local filter = global_helpers.filter
+local filter = global_helpers.tbl_filter
 local is_os = global_helpers.is_os
-local map = global_helpers.map
+local map = global_helpers.tbl_map
 local ok = global_helpers.ok
 local sleep = global_helpers.sleep
 local tbl_contains = global_helpers.tbl_contains
@@ -597,6 +597,19 @@ function module.assert_alive()
   assert(2 == module.eval('1+1'), 'crash? request failed')
 end
 
+-- Asserts that buffer is loaded and visible in the current tabpage.
+function module.assert_visible(bufnr, visible)
+  assert(type(visible) == 'boolean')
+  eq(visible, module.bufmeths.is_loaded(bufnr))
+  if visible then
+    assert(-1 ~= module.funcs.bufwinnr(bufnr),
+      'expected buffer to be visible in current tabpage: '..tostring(bufnr))
+  else
+    assert(-1 == module.funcs.bufwinnr(bufnr),
+      'expected buffer NOT visible in current tabpage: '..tostring(bufnr))
+  end
+end
+
 local function do_rmdir(path)
   local mode, errmsg, errcode = lfs.attributes(path, 'mode')
   if mode == nil then
@@ -755,7 +768,7 @@ function module.new_pipename()
 end
 
 function module.missing_provider(provider)
-  if provider == 'ruby' or provider == 'node' then
+  if provider == 'ruby' or provider == 'node' or provider == 'perl' then
     local prog = module.funcs['provider#' .. provider .. '#Detect']()
     return prog == '' and (provider .. ' not detected') or false
   elseif provider == 'python' or provider == 'python3' then
@@ -781,7 +794,7 @@ function module.alter_slashes(obj)
     end
     return ret
   else
-    assert(false, 'Could only alter slashes for tables of strings and strings')
+    assert(false, 'expected string or table of strings, got '..type(obj))
   end
 end
 

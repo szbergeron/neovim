@@ -23,16 +23,14 @@ local function request(method, params, callback)
   return vim.lsp.buf_request(0, method, params, callback)
 end
 
+function M.server_ready()
+  return not not vim.lsp.buf_notify(0, "window/progress", {})
+end
+
 function M.hover()
   local params = util.make_position_params()
   request('textDocument/hover', params)
 end
-
-function M.peek_definition()
-  local params = util.make_position_params()
-  request('textDocument/peekDefinition', params)
-end
-
 
 function M.declaration()
   local params = util.make_position_params()
@@ -68,8 +66,9 @@ end
 
 function M.formatting(options)
   validate { options = {options, 't', true} }
+  local sts = vim.bo.softtabstop;
   options = vim.tbl_extend('keep', options or {}, {
-    tabSize = vim.bo.tabstop;
+    tabSize = (sts > 0 and sts) or (sts < 0 and vim.bo.shiftwidth) or vim.bo.tabstop;
     insertSpaces = vim.bo.expandtab;
   })
   local params = {
@@ -85,8 +84,9 @@ function M.range_formatting(options, start_pos, end_pos)
     start_pos = {start_pos, 't', true};
     end_pos = {end_pos, 't', true};
   }
+  local sts = vim.bo.softtabstop;
   options = vim.tbl_extend('keep', options or {}, {
-    tabSize = vim.bo.tabstop;
+    tabSize = (sts > 0 and sts) or (sts < 0 and vim.bo.shiftwidth) or vim.bo.tabstop;
     insertSpaces = vim.bo.expandtab;
   })
   local A = list_extend({}, start_pos or api.nvim_buf_get_mark(0, '<'))
@@ -130,6 +130,29 @@ function M.references(context)
   }
   params[vim.type_idx] = vim.types.dictionary
   request('textDocument/references', params)
+end
+
+function M.document_symbol()
+  local params = { textDocument = util.make_text_document_params() }
+  request('textDocument/documentSymbol', params)
+end
+
+--- Send request to server to resolve document highlights for the
+--- current text document position. This request can be associated
+--- to key mapping or to events such as `CursorHold`, eg:
+---
+--- <pre>
+--- vim.api.nvim_command [[autocmd CursorHold  <buffer> lua vim.lsp.buf.document_highlight()]]
+--- vim.api.nvim_command [[autocmd CursorHoldI <buffer> lua vim.lsp.buf.document_highlight()]]
+--- vim.api.nvim_command [[autocmd CursorMoved <buffer> lua vim.lsp.buf.clear_references()]]
+--- </pre>
+function M.document_highlight()
+  local params = util.make_position_params()
+  request('textDocument/documentHighlight', params)
+end
+
+function M.clear_references()
+  util.buf_clear_references()
 end
 
 return M

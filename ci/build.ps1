@@ -29,6 +29,29 @@ function exitIfFailed() {
   }
 }
 
+# https://github.com/lukesampson/scoop#installation
+$scoop = (New-Object System.Net.WebClient).DownloadString('https://get.scoop.sh')
+& {
+  Set-StrictMode -Off
+  Invoke-Expression $scoop
+}
+
+scoop install perl
+perl --version
+cpanm.bat --version
+
+if (-not $NoTests) {
+  scoop install nodejs-lts
+  node --version
+  npm.cmd --version
+
+  cpanm.bat -n Neovim::Ext
+  if ($LastExitCode -ne 0) {
+    Get-Content -Path "$env:USERPROFILE\.cpanm\build.log"
+  }
+  perl -W -e 'use Neovim::Ext; print $Neovim::Ext::VERSION'; exitIfFailed
+}
+
 if (-Not (Test-Path -PathType container $env:DEPS_BUILD_DIR)) {
   write-host "cache dir not found: $($env:DEPS_BUILD_DIR)"
   mkdir $env:DEPS_BUILD_DIR
@@ -57,7 +80,7 @@ if ($compiler -eq 'MINGW') {
   # in MSYS2, but we cannot build inside the MSYS2 shell.
   $cmakeGenerator = 'Ninja'
   $cmakeGeneratorArgs = '-v'
-  $mingwPackages = @('ninja', 'cmake', 'perl', 'diffutils').ForEach({
+  $mingwPackages = @('ninja', 'cmake', 'diffutils').ForEach({
     "mingw-w64-$arch-$_"
   })
 
@@ -99,23 +122,6 @@ if (-not $NoTests) {
   npm.cmd install -g neovim
   Get-Command -CommandType Application neovim-node-host.cmd
   npm.cmd link neovim
-
-
-  $env:TREE_SITTER_DIR = $env:USERPROFILE + "\tree-sitter-build"
-  mkdir "$env:TREE_SITTER_DIR\bin"
-
-  $xbits = if ($bits -eq '32') {'x86'} else {'x64'}
-  Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/tree-sitter/tree-sitter/releases/download/0.15.9/tree-sitter-windows-$xbits.gz" -OutFile tree-sitter.exe.gz
-  C:\msys64\usr\bin\gzip -d tree-sitter.exe.gz
-
-  Invoke-WebRequest -UseBasicParsing -Uri "https://codeload.github.com/tree-sitter/tree-sitter-c/zip/v0.15.2" -OutFile tree_sitter_c.zip
-  Expand-Archive .\tree_sitter_c.zip -DestinationPath .
-  cd tree-sitter-c-0.15.2
-  ..\tree-sitter.exe test
-  if (-Not (Test-Path -PathType Leaf "$env:TREE_SITTER_DIR\bin\c.dll")) {
-    exit 1
-  }
-
 }
 
 if ($compiler -eq 'MSVC') {
@@ -150,6 +156,9 @@ if (-not $NoTests) {
   # Functional tests
   # The $LastExitCode from MSBuild can't be trusted
   $failed = $false
+
+  # Run only this test file:
+  # $env:TEST_FILE = "test\functional\foo.lua"
   cmake --build . --config $cmakeBuildType --target functionaltest -- $cmakeGeneratorArgs 2>&1 |
     foreach { $failed = $failed -or
       $_ -match 'functional tests failed with error'; $_ }

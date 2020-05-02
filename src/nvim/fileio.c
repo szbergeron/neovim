@@ -20,7 +20,7 @@
 #include "nvim/cursor.h"
 #include "nvim/diff.h"
 #include "nvim/edit.h"
-#include "nvim/eval.h"
+#include "nvim/eval/userfunc.h"
 #include "nvim/ex_cmds.h"
 #include "nvim/ex_docmd.h"
 #include "nvim/ex_eval.h"
@@ -61,6 +61,11 @@
 
 #define BUFSIZE         8192    /* size of normal write buffer */
 #define SMBUFSIZE       256     /* size of emergency write buffer */
+
+// For compatibility with libuv < 1.20.0 (tested on 1.18.0)
+#ifndef UV_FS_COPYFILE_FICLONE
+#define UV_FS_COPYFILE_FICLONE 0
+#endif
 
 //
 // The autocommands are stored in a list for each event.
@@ -407,11 +412,27 @@ readfile(
 
     if (newfile) {
       if (apply_autocmds_exarg(EVENT_BUFREADCMD, NULL, sfname,
-              FALSE, curbuf, eap))
-        return aborting() ? FAIL : OK;
+                               false, curbuf, eap)) {
+        int status = OK;
+
+        if (aborting()) {
+          status = FAIL;
+        }
+
+        // The BufReadCmd code usually uses ":read" to get the text and
+        // perhaps ":file" to change the buffer name. But we should
+        // consider this to work like ":edit", thus reset the
+        // BF_NOTEDITED flag.  Then ":write" will work to overwrite the
+        // same file.
+        if (status == OK) {
+          curbuf->b_flags &= ~BF_NOTEDITED;
+        }
+        return status;
+      }
     } else if (apply_autocmds_exarg(EVENT_FILEREADCMD, sfname, sfname,
-                   FALSE, NULL, eap))
+                                    false, NULL, eap)) {
       return aborting() ? FAIL : OK;
+    }
 
     curbuf->b_op_start = pos;
   }
@@ -2032,14 +2053,16 @@ readfile_linenr(
  * Fill "*eap" to force the 'fileencoding', 'fileformat' and 'binary to be
  * equal to the buffer "buf".  Used for calling readfile().
  */
-void prep_exarg(exarg_T *eap, buf_T *buf)
+void prep_exarg(exarg_T *eap, const buf_T *buf)
+  FUNC_ATTR_NONNULL_ALL
 {
-  eap->cmd = xmalloc(STRLEN(buf->b_p_ff) + STRLEN(buf->b_p_fenc) + 15);
+  const size_t cmd_len = 15 + STRLEN(buf->b_p_fenc);
+  eap->cmd = xmalloc(cmd_len);
 
-  sprintf((char *)eap->cmd, "e ++ff=%s ++enc=%s", buf->b_p_ff, buf->b_p_fenc);
-  eap->force_enc = 14 + (int)STRLEN(buf->b_p_ff);
+  snprintf((char *)eap->cmd, cmd_len, "e ++enc=%s", buf->b_p_fenc);
+  eap->force_enc = 8;
   eap->bad_char = buf->b_bad_char;
-  eap->force_ff = 7;
+  eap->force_ff = *buf->b_p_ff;
 
   eap->force_bin = buf->b_p_bin ? FORCE_BIN : FORCE_NOBIN;
   eap->read_edit = FALSE;
@@ -6587,7 +6610,7 @@ static int autocmd_nested = FALSE;
 
 /// Execute autocommands for "event" and file name "fname".
 ///
-/// @param event event that occured
+/// @param event event that occurred
 /// @param fname filename, NULL or empty means use actual file name
 /// @param fname_io filename to use for <afile> on cmdline
 /// @param force When true, ignore autocmd_busy
@@ -6604,7 +6627,7 @@ bool apply_autocmds(event_T event, char_u *fname, char_u *fname_io, bool force,
 /// Like apply_autocmds(), but with extra "eap" argument.  This takes care of
 /// setting v:filearg.
 ///
-/// @param event event that occured
+/// @param event event that occurred
 /// @param fname NULL or empty means use actual file name
 /// @param fname_io fname to use for <afile> on cmdline
 /// @param force When true, ignore autocmd_busy
@@ -6624,7 +6647,7 @@ static bool apply_autocmds_exarg(event_T event, char_u *fname, char_u *fname_io,
 /// conditional, no autocommands are executed.  If otherwise the autocommands
 /// cause the script to be aborted, retval is set to FAIL.
 ///
-/// @param event event that occured
+/// @param event event that occurred
 /// @param fname NULL or empty means use actual file name
 /// @param fname_io fname to use for <afile> on cmdline
 /// @param force When true, ignore autocmd_busy
@@ -6684,7 +6707,7 @@ bool has_event(event_T event) FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
 
 /// Execute autocommands for "event" and file name "fname".
 ///
-/// @param event event that occured
+/// @param event event that occurred
 /// @param fname filename, NULL or empty means use actual file name
 /// @param fname_io filename to use for <afile> on cmdline,
 ///                 NULL means use `fname`.
@@ -6862,7 +6885,8 @@ static bool apply_autocmds_group(event_T event, char_u *fname, char_u *fname_io,
         || event == EVENT_SPELLFILEMISSING
         || event == EVENT_SYNTAX
         || event == EVENT_SIGNAL
-        || event == EVENT_TABCLOSED) {
+        || event == EVENT_TABCLOSED
+        || event == EVENT_WINCLOSED) {
       fname = vim_strsave(fname);
     } else {
       fname = (char_u *)FullName_save((char *)fname, false);
@@ -7196,8 +7220,8 @@ char_u *getnextac(int c, void *cookie, int indent, bool do_concat)
 /// To account for buffer-local autocommands, function needs to know
 /// in which buffer the file will be opened.
 ///
-/// @param event event that occured.
-/// @param sfname filename the event occured in.
+/// @param event event that occurred.
+/// @param sfname filename the event occurred in.
 /// @param buf buffer the file is open in
 bool has_autocmd(event_T event, char_u *sfname, buf_T *buf)
   FUNC_ATTR_WARN_UNUSED_RESULT

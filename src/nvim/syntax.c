@@ -3981,7 +3981,7 @@ static void add_keyword(char_u *const name,
                                      STRLEN(kp->keyword), hash);
 
   // even though it looks like only the kp->keyword member is
-  // being used here, vim uses some pointer trickery to get the orignal
+  // being used here, vim uses some pointer trickery to get the original
   // struct again later by using knowledge of the offset of the keyword
   // field in the struct. See the definition of the HI2KE macro.
   if (HASHITEM_EMPTY(hi)) {
@@ -6400,7 +6400,7 @@ static int color_numbers_88[28] = { 0, 4, 2, 6,
   75, 11, 78, 15, -1 };
 // for xterm with 256 colors...
 static int color_numbers_256[28] = { 0, 4, 2, 6,
-  1, 5, 130, 130,
+  1, 5, 130, 3,
   248, 248, 7, 7,
   242, 242,
   12, 81, 10, 121,

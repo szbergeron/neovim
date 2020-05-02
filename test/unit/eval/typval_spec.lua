@@ -14,7 +14,7 @@ local cimport = helpers.cimport
 local to_cstr = helpers.to_cstr
 local alloc_log_new = helpers.alloc_log_new
 local concat_tables = helpers.concat_tables
-local map = helpers.map
+local map = helpers.tbl_map
 
 local a = eval_helpers.alloc_logging_helpers
 local int = eval_helpers.int
@@ -2020,6 +2020,26 @@ describe('typval.c', function()
           alloc_log:clear()
           lib.emsg_skip = lib.emsg_skip + 1
           eq(FAIL, check_emsg(function() return lib.tv_dict_add_nr(d, 'testt', 3, 2) end,
+                              nil))
+          lib.emsg_skip = lib.emsg_skip - 1
+          alloc_log:clear_tmp_allocs()
+          alloc_log:check({})
+        end)
+      end)
+      describe('float()', function()
+        itp('works', function()
+          local d = dict({test=10})
+          alloc_log:clear()
+          eq({test=10}, dct2tbl(d))
+          eq(OK, lib.tv_dict_add_float(d, 'testt', 3, 1.5))
+          local dis = dict_items(d)
+          alloc_log:check({a.di(dis.tes, 'tes')})
+          eq({test=10, tes=1.5}, dct2tbl(d))
+          eq(FAIL, check_emsg(function() return lib.tv_dict_add_float(d, 'testt', 3, 1.5) end,
+                              'E685: Internal error: hash_add()'))
+          alloc_log:clear()
+          lib.emsg_skip = lib.emsg_skip + 1
+          eq(FAIL, check_emsg(function() return lib.tv_dict_add_float(d, 'testt', 3, 1.5) end,
                               nil))
           lib.emsg_skip = lib.emsg_skip - 1
           alloc_log:clear_tmp_allocs()

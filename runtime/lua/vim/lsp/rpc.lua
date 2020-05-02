@@ -33,38 +33,25 @@ local function convert_NIL(v)
   return v
 end
 
--- If a dictionary is passed in, turn it into a list of string of "k=v"
--- Accepts a table which can be composed of k=v strings or map-like
--- specification, such as:
---
--- ```
--- {
---   "PRODUCTION=false";
---   "PATH=/usr/bin/";
---   PORT = 123;
---   HOST = "0.0.0.0";
--- }
--- ```
---
--- Non-string values will be cast with `tostring`
-local function force_env_list(final_env)
-  if final_env then
-    local env = final_env
-    final_env = {}
-    for k,v in pairs(env) do
-      -- If it's passed in as a dict, then convert to list of "k=v"
-      if type(k) == "string" then
-        table.insert(final_env, k..'='..tostring(v))
-      elseif type(v) == 'string' then
-        table.insert(final_env, v)
-      else
-        -- TODO is this right or should I exception here?
-        -- Try to coerce other values to string.
-        table.insert(final_env, tostring(v))
-      end
-    end
-    return final_env
+--- Merges current process env with the given env and returns the result as
+--- a list of "k=v" strings.
+---
+--- Example:
+---
+---      { PRODUCTION="false", PATH="/usr/bin/", PORT=123, HOST="0.0.0.0", }
+---   => { "PRODUCTION=false", "PATH=/usr/bin/", "PORT=123", "HOST=0.0.0.0", }
+local function env_merge(env)
+  if env == nil then
+    return env
   end
+  -- Merge.
+  env = vim.tbl_extend('force', vim.fn.environ(), env)
+  local final_env = {}
+  for k,v in pairs(env) do
+    assert(type(k) == 'string', 'env must be a dict')
+    table.insert(final_env, k..'='..tostring(v))
+  end
+  return final_env
 end
 
 local function format_message_with_content_length(encoded_message)
@@ -153,14 +140,23 @@ local function format_rpc_error(err)
   validate {
     err = { err, 't' };
   }
-  local code_name = assert(protocol.ErrorCodes[err.code], "err.code is invalid")
-  local message_parts = {"RPC", code_name}
+
+  -- There is ErrorCodes in the LSP specification,
+  -- but in ResponseError.code it is not used and the actual type is number.
+  local code
+  if protocol.ErrorCodes[err.code] then
+    code = string.format("code_name = %s,", protocol.ErrorCodes[err.code])
+  else
+    code = string.format("code_name = unknown, code = %s,", err.code)
+  end
+
+  local message_parts = {"RPC[Error]", code}
   if err.message then
-    table.insert(message_parts, "message = ")
+    table.insert(message_parts, "message =")
     table.insert(message_parts, string.format("%q", err.message))
   end
   if err.data then
-    table.insert(message_parts, "data = ")
+    table.insert(message_parts, "data =")
     table.insert(message_parts, vim.inspect(err.data))
   end
   return table.concat(message_parts, ' ')
@@ -262,7 +258,7 @@ local function create_and_start_client(cmd, cmd_args, handlers, extra_spawn_para
       if spawn_params.cwd then
         assert(is_dir(spawn_params.cwd), "cwd must be a directory")
       end
-      spawn_params.env = force_env_list(extra_spawn_params.env)
+      spawn_params.env = env_merge(extra_spawn_params.env)
     end
     handle, pid = uv.spawn(cmd, spawn_params, onexit)
   end

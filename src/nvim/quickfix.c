@@ -3845,7 +3845,7 @@ static void qf_fill_buffer(qf_list_T *qfl, buf_T *buf, qfline_T *old_last)
      *dirname = NUL;
 
     // Add one line for each error
-    if (old_last == NULL) {
+    if (old_last == NULL || old_last->qf_next == NULL) {
       qfp = qfl->qf_start;
       lnum = 0;
     } else {
@@ -4775,10 +4775,10 @@ static void vgr_display_fname(char_u *fname)
 static buf_T *vgr_load_dummy_buf(char_u *fname, char_u *dirname_start,
                                  char_u *dirname_now)
 {
-  char_u *save_ei = NULL;
-
   // Don't do Filetype autocommands to avoid loading syntax and
   // indent scripts, a great speed improvement.
+  char_u *save_ei = au_event_disable(",Filetype");
+
   long save_mls = p_mls;
   p_mls = 0;
 
@@ -5134,6 +5134,7 @@ theend:
 // Restore current working directory to "dirname_start" if they differ, taking
 // into account whether it is set locally or globally.
 static void restore_start_dir(char_u *dirname_start)
+  FUNC_ATTR_NONNULL_ALL
 {
   char_u *dirname_now = xmalloc(MAXPATHL);
 
@@ -5251,8 +5252,29 @@ load_dummy_buffer (
 // directory to "dirname_start" prior to returning, if autocmds or the
 // 'autochdir' option have changed it.
 static void wipe_dummy_buffer(buf_T *buf, char_u *dirname_start)
+  FUNC_ATTR_NONNULL_ALL
 {
-  if (curbuf != buf) {          // safety check
+  // If any autocommand opened a window on the dummy buffer, close that
+  // window.  If we can't close them all then give up.
+  while (buf->b_nwindows > 0) {
+    bool did_one = false;
+
+    if (firstwin->w_next != NULL) {
+      for (win_T *wp = firstwin; wp != NULL; wp = wp->w_next) {
+        if (wp->w_buffer == buf) {
+          if (win_close(wp, false) == OK) {
+            did_one = true;
+          }
+          break;
+        }
+      }
+    }
+    if (!did_one) {
+      return;
+    }
+  }
+
+  if (curbuf != buf && buf->b_nwindows == 0) {  // safety check
     cleanup_T cs;
 
     // Reset the error/interrupt/exception state here so that aborting()

@@ -277,6 +277,21 @@ func Test_set_errors()
   call assert_fails('set t_foo=', 'E846:')
 endfunc
 
+" Must be executed before other tests that set 'term'.
+func Test_000_term_option_verbose()
+  if has('nvim') || has('gui_running')
+    return
+  endif
+  let verb_cm = execute('verbose set t_cm')
+  call assert_notmatch('Last set from', verb_cm)
+
+  let term_save = &term
+  set term=ansi
+  let verb_cm = execute('verbose set t_cm')
+  call assert_match('Last set from.*test_options.vim', verb_cm)
+  let &term = term_save
+endfunc
+
 func Test_set_ttytype()
   " Nvim does not support 'ttytype'.
   if !has('nvim') && !has('gui_running') && has('unix')
@@ -495,4 +510,47 @@ func Test_shortmess_F2()
   call assert_match('file2', execute('bn', ''))
   bwipe
   bwipe
+endfunc
+
+func Test_local_scrolloff()
+  set so=5
+  set siso=7
+  split
+  call assert_equal(5, &so)
+  setlocal so=3
+  call assert_equal(3, &so)
+  wincmd w
+  call assert_equal(5, &so)
+  wincmd w
+  setlocal so<
+  call assert_equal(5, &so)
+  setlocal so=0
+  call assert_equal(0, &so)
+  setlocal so=-1
+  call assert_equal(5, &so)
+
+  call assert_equal(7, &siso)
+  setlocal siso=3
+  call assert_equal(3, &siso)
+  wincmd w
+  call assert_equal(7, &siso)
+  wincmd w
+  setlocal siso<
+  call assert_equal(7, &siso)
+  setlocal siso=0
+  call assert_equal(0, &siso)
+  setlocal siso=-1
+  call assert_equal(7, &siso)
+
+  close
+  set so&
+  set siso&
+endfunc
+
+func Test_visualbell()
+  set belloff=
+  set visualbell
+  call assert_beeps('normal 0h')
+  set novisualbell
+  set belloff=all
 endfunc

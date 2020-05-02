@@ -228,7 +228,8 @@ int msg_attr(const char *s, const int attr)
 }
 
 /// similar to msg_outtrans_attr, but support newlines and tabs.
-void msg_multiline_attr(const char *s, int attr, bool check_int)
+void msg_multiline_attr(const char *s, int attr,
+                        bool check_int, bool *need_clear)
   FUNC_ATTR_NONNULL_ALL
 {
   const char *next_spec = s;
@@ -243,8 +244,9 @@ void msg_multiline_attr(const char *s, int attr, bool check_int)
       // Printing all char that are before the char found by strpbrk
       msg_outtrans_len_attr((const char_u *)s, next_spec - s, attr);
 
-      if (*next_spec != TAB) {
+      if (*next_spec != TAB && *need_clear) {
         msg_clr_eos();
+        *need_clear = false;
       }
       msg_putchar_attr((uint8_t)(*next_spec), attr);
       s = next_spec + 1;
@@ -256,6 +258,7 @@ void msg_multiline_attr(const char *s, int attr, bool check_int)
   if (*s != NUL) {
     msg_outtrans_attr((char_u *)s, attr);
   }
+  return;
 }
 
 
@@ -314,12 +317,15 @@ bool msg_attr_keep(char_u *s, int attr, bool keep, bool multiline)
   if (buf != NULL)
     s = buf;
 
+  bool need_clear = true;
   if (multiline) {
-    msg_multiline_attr((char *)s, attr, false);
+    msg_multiline_attr((char *)s, attr, false, &need_clear);
   } else {
     msg_outtrans_attr(s, attr);
   }
-  msg_clr_eos();
+  if (need_clear) {
+    msg_clr_eos();
+  }
   retval = msg_end();
 
   if (keep && retval && vim_strsize(s) < (int)(Rows - cmdline_row - 1)
@@ -1515,7 +1521,8 @@ void msg_make(char_u *arg)
 /// the character/string -- webb
 int msg_outtrans_special(
     const char_u *strstart,
-    int from               ///< true for LHS of a mapping
+    bool from,              ///< true for LHS of a mapping
+    int maxlen              ///< screen columns, 0 for unlimeted
 )
 {
   if (strstart == NULL) {
@@ -1535,6 +1542,9 @@ int msg_outtrans_special(
       string = str2special((const char **)&str, from, false);
     }
     const int len = vim_strsize((char_u *)string);
+    if (maxlen > 0 && retval + len >= maxlen) {
+      break;
+    }
     // Highlight special keys
     msg_puts_attr(string, (len > 1
                            && (*mb_ptr2len)((char_u *)string) <= 1

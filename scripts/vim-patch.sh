@@ -5,6 +5,12 @@ set -u
 # Use privileged mode, which e.g. skips using CDPATH.
 set -p
 
+# Ensure that the user has a bash that supports -A
+if [[ "${BASH_VERSINFO[0]}" -lt 4  ]]; then
+  echo "This script requires bash version 3 or later (you have ${BASH_VERSION})." >&2
+  exit 1
+fi
+
 readonly NVIM_SOURCE_DIR="${NVIM_SOURCE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 readonly VIM_SOURCE_DIR_DEFAULT="${NVIM_SOURCE_DIR}/.vim-src"
 readonly VIM_SOURCE_DIR="${VIM_SOURCE_DIR:-${VIM_SOURCE_DIR_DEFAULT}}"
@@ -234,7 +240,8 @@ get_vimpatch() {
   msg_ok "Saved patch to '${NVIM_SOURCE_DIR}/${patch_file}'."
 }
 
-# shellcheck disable=SC2015  # "Note that A && B || C is not if-then-else."
+# shellcheck disable=SC2015
+# ^ "Note that A && B || C is not if-then-else."
 stage_patch() {
   get_vimpatch "$1"
   local try_apply="${2:-}"
@@ -305,7 +312,8 @@ git_hub_pr() {
   git hub pull new -m "$1"
 }
 
-# shellcheck disable=SC2015  # "Note that A && B || C is not if-then-else."
+# shellcheck disable=SC2015
+# ^ "Note that A && B || C is not if-then-else."
 submit_pr() {
   require_executable git
   local push_first
@@ -560,6 +568,7 @@ list_missing_previous_vimpatches_for_patch() {
     local -a missing_vim_patches=()
     _set_missing_vimpatches 1 -- "${fname}"
 
+    set +u  # Avoid "unbound variable" with bash < 4.4 below.
     local missing_vim_commit_info="${missing_vim_patches[0]}"
     if [[ -z "${missing_vim_commit_info}" ]]; then
       printf -- "-\n"
@@ -572,6 +581,7 @@ list_missing_previous_vimpatches_for_patch() {
         printf -- "-\n"
       fi
     fi
+    set -u
   done
 
   set +u  # Avoid "unbound variable" with bash < 4.4 below.
@@ -666,9 +676,11 @@ review_pr() {
   echo
   echo "Downloading data for pull request #${pr}."
 
-  local pr_commit_urls=(
-    "$(curl -Ssf "https://api.github.com/repos/neovim/neovim/pulls/${pr}/commits" \
-      | jq -r '.[].html_url')")
+  local -a pr_commit_urls
+  while IFS= read -r pr_commit_url; do
+    pr_commit_urls+=("$pr_commit_url")
+  done < <(curl -Ssf "https://api.github.com/repos/neovim/neovim/pulls/${pr}/commits" \
+    | jq -r '.[].html_url')
 
   echo "Found ${#pr_commit_urls[@]} commit(s)."
 
