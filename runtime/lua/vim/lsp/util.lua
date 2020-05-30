@@ -94,18 +94,45 @@ local edit_sort_key = sort_by_key(function(e)
   return {e.A[1], e.A[2], e.i}
 end)
 
+local function get_line_byte_from_line_character(bufnr, lnum, cnum)
+  -- Skip check when the byte and character position is the same
+  if cnum > 0 then
+    local lines = api.nvim_buf_get_lines(bufnr, lnum, lnum+1, false)
+
+    if #lines > 0 then
+      return vim.str_byteindex(lines[1], cnum)
+    end
+  end
+
+  return cnum
+end
+
 function M.apply_text_edits(text_edits, bufnr)
   if not next(text_edits) then return end
+  if not api.nvim_buf_is_loaded(bufnr) then
+    vim.fn.bufload(bufnr)
+  end
   local start_line, finish_line = math.huge, -1
   local cleaned = {}
   for i, e in ipairs(text_edits) do
+    -- adjust start and end column for UTF-16 encoding of non-ASCII characters
+    local start_row = e.range.start.line
+    local start_col = get_line_byte_from_line_character(
+      bufnr,
+      start_row,
+      e.range.start.character)
+    local end_row = e.range["end"].line
+    local end_col = get_line_byte_from_line_character(
+      bufnr,
+      end_row,
+      e.range["end"].character)
     start_line = math.min(e.range.start.line, start_line)
     finish_line = math.max(e.range["end"].line, finish_line)
     -- TODO(ashkan) sanity check ranges for overlap.
     table.insert(cleaned, {
       i = i;
-      A = {e.range.start.line; e.range.start.character};
-      B = {e.range["end"].line; e.range["end"].character};
+      A = {start_row; start_col};
+      B = {end_row; end_col};
       lines = vim.split(e.newText, '\n', true);
     })
   end
@@ -113,9 +140,6 @@ function M.apply_text_edits(text_edits, bufnr)
   -- Reverse sort the orders so we can apply them without interfering with
   -- eachother. Also add i as a sort key to mimic a stable sort.
   table.sort(cleaned, edit_sort_key)
-  if not api.nvim_buf_is_loaded(bufnr) then
-    vim.fn.bufload(bufnr)
-  end
   local lines = api.nvim_buf_get_lines(bufnr, start_line, finish_line + 1, false)
   local fix_eol = api.nvim_buf_get_option(bufnr, 'fixeol')
   local set_eol = fix_eol and api.nvim_buf_line_count(bufnr) <= finish_line + 1
@@ -159,10 +183,12 @@ end
 function M.apply_text_document_edit(text_document_edit)
   local text_document = text_document_edit.textDocument
   local bufnr = vim.uri_to_bufnr(text_document.uri)
-  -- `VersionedTextDocumentIdentifier`s version may be nil https://microsoft.github.io/language-server-protocol/specification#versionedTextDocumentIdentifier
-  if text_document.version ~= nil and M.buf_versions[bufnr] > text_document.version then
-    print("Buffer ", text_document.uri, " newer than edits.")
-    return
+  if text_document.version then
+    -- `VersionedTextDocumentIdentifier`s version may be null https://microsoft.github.io/language-server-protocol/specification#versionedTextDocumentIdentifier
+    if text_document.version ~= vim.NIL and M.buf_versions[bufnr] ~= nil and M.buf_versions[bufnr] > text_document.version then
+      print("Buffer ", text_document.uri, " newer than edits.")
+      return
+    end
   end
   M.apply_text_edits(text_document_edit.edits, bufnr)
 end
@@ -171,6 +197,66 @@ function M.get_current_line_to_cursor()
   local pos = api.nvim_win_get_cursor(0)
   local line = assert(api.nvim_buf_get_lines(0, pos[1]-1, pos[1], false)[1])
   return line:sub(pos[2]+1)
+end
+
+local function parse_snippet_rec(input, inner)
+  local res = ""
+
+  local close, closeend = nil, nil
+  if inner then
+    close, closeend = input:find("}", 1, true)
+    while close ~= nil and input:sub(close-1,close-1) == "\\" do
+      close, closeend = input:find("}", closeend+1, true)
+    end
+  end
+
+  local didx = input:find('$',  1, true)
+  if didx == nil and close == nil then
+    return input, ""
+  elseif close ~=nil and (didx == nil or close < didx) then
+    -- No inner placeholders
+    return input:sub(0, close-1), input:sub(closeend+1)
+  end
+
+  res = res .. input:sub(0, didx-1)
+  input = input:sub(didx+1)
+
+  local tabstop, tabstopend = input:find('^%d+')
+  local placeholder, placeholderend = input:find('^{%d+:')
+  local choice, choiceend = input:find('^{%d+|')
+
+  if tabstop then
+    input = input:sub(tabstopend+1)
+  elseif choice then
+    input = input:sub(choiceend+1)
+    close, closeend = input:find("|}", 1, true)
+
+    res = res .. input:sub(0, close-1)
+    input = input:sub(closeend+1)
+  elseif placeholder then
+    -- TODO: add support for variables
+    input = input:sub(placeholderend+1)
+
+    -- placeholders and variables are recursive
+    while input ~= "" do
+      local r, tail = parse_snippet_rec(input, true)
+      r = r:gsub("\\}", "}")
+
+      res = res .. r
+      input = tail
+    end
+  else
+    res = res .. "$"
+  end
+
+  return res, input
+end
+
+-- Parse completion entries, consuming snippet tokens
+function M.parse_snippet(input)
+  local res, _ = parse_snippet_rec(input, false)
+
+  return res
 end
 
 -- Sort by CompletionItem.sortText
@@ -187,9 +273,17 @@ end
 -- https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_completion
 local function get_completion_word(item)
   if item.textEdit ~= nil and item.textEdit.newText ~= nil then
-    return item.textEdit.newText
+    if protocol.InsertTextFormat[item.insertTextFormat] == "PlainText" then
+      return item.textEdit.newText
+    else
+      return M.parse_snippet(item.textEdit.newText)
+    end
   elseif item.insertText ~= nil then
-    return item.insertText
+    if protocol.InsertTextFormat[item.insertTextFormat] == "PlainText" then
+      return item.insertText
+    else
+      return M.parse_snippet(item.insertText)
+    end
   end
   return item.label
 end
@@ -201,6 +295,13 @@ local function remove_unmatch_completion_items(items, prefix)
     local word = get_completion_word(item)
     return vim.startswith(word, prefix)
   end, items)
+end
+
+-- Acording to LSP spec, if the client set "completionItemKind.valueSet",
+-- the client must handle it properly even if it receives a value outside the specification.
+-- https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_completion
+function M._get_completion_item_kind_name(completion_item_kind)
+  return protocol.CompletionItemKind[completion_item_kind] or "Unknown"
 end
 
 --- Getting vim complete-items with incomplete flag.
@@ -234,7 +335,7 @@ function M.text_document_completion_list_to_complete_items(result, prefix)
     table.insert(matches, {
       word = word,
       abbr = completion_item.label,
-      kind = protocol.CompletionItemKind[completion_item.kind] or '',
+      kind = M._get_completion_item_kind_name(completion_item.kind),
       menu = completion_item.detail or '',
       info = info,
       icase = 1,
@@ -424,24 +525,50 @@ function M.make_floating_popup_options(width, height, opts)
 end
 
 function M.jump_to_location(location)
-  if location.uri == nil then return end
-  local bufnr = vim.uri_to_bufnr(location.uri)
+  -- location may be Location or LocationLink
+  local uri = location.uri or location.targetUri
+  if uri == nil then return end
+  local bufnr = vim.uri_to_bufnr(uri)
   -- Save position in jumplist
   vim.cmd "normal! m'"
 
   -- Push a new item into tagstack
-  local items = {}
-  table.insert(items, {tagname=vim.fn.expand("<cword>"), from=vim.fn.getpos('.')})
-  vim.fn.settagstack(vim.fn.bufnr('%'), {items=items}, 't')
+  local from = {vim.fn.bufnr('%'), vim.fn.line('.'), vim.fn.col('.'), 0}
+  local items = {{tagname=vim.fn.expand('<cword>'), from=from}}
+  vim.fn.settagstack(vim.fn.win_getid(), {items=items}, 't')
 
-  --- Jump to new location
+  --- Jump to new location (adjusting for UTF-16 encoding of characters)
   api.nvim_set_current_buf(bufnr)
-  local row = location.range.start.line
-  local col = location.range.start.character
+  api.nvim_buf_set_option(0, 'buflisted', true)
+  local range = location.range or location.targetSelectionRange
+  local row = range.start.line
+  local col = range.start.character
   local line = api.nvim_buf_get_lines(0, row, row+1, true)[1]
   col = vim.str_byteindex(line, col)
   api.nvim_win_set_cursor(0, {row + 1, col})
   return true
+end
+
+--- Preview a location in a floating windows
+---
+--- behavior depends on type of location:
+---   - for Location, range is shown (e.g., function definition)
+---   - for LocationLink, targetRange is shown (e.g., body of function definition)
+---
+--@param location a single Location or LocationLink
+--@return bufnr,winnr buffer and window number of floating window or nil
+function M.preview_location(location)
+  -- location may be LocationLink or Location (more useful for the former)
+  local uri = location.targetUri or location.uri
+  if uri == nil then return end
+  local bufnr = vim.uri_to_bufnr(uri)
+  if not api.nvim_buf_is_loaded(bufnr) then
+    vim.fn.bufload(bufnr)
+  end
+  local range = location.targetRange or location.range
+  local contents = api.nvim_buf_get_lines(bufnr, range.start.line, range["end"].line+1, false)
+  local filetype = api.nvim_buf_get_option(bufnr, 'filetype')
+  return M.open_floating_preview(contents, filetype)
 end
 
 local function find_window_by_var(name, value)
@@ -698,20 +825,29 @@ do
     return severity_highlights[severity]
   end
 
-  function M.show_line_diagnostics()
+  function M.get_line_diagnostics()
     local bufnr = api.nvim_get_current_buf()
-    local line = api.nvim_win_get_cursor(0)[1] - 1
+    local linenr = api.nvim_win_get_cursor(0)[1] - 1
+
+    local buffer_diagnostics = M.diagnostics_by_buf[bufnr]
+
+    if not buffer_diagnostics then
+      return {}
+    end
+
+    local diagnostics_by_line = M.diagnostics_group_by_line(buffer_diagnostics)
+    return diagnostics_by_line[linenr] or {}
+  end
+
+  function M.show_line_diagnostics()
     -- local marks = api.nvim_buf_get_extmarks(bufnr, diagnostic_ns, {line, 0}, {line, -1}, {})
     -- if #marks == 0 then
     --   return
     -- end
     local lines = {"Diagnostics:"}
     local highlights = {{0, "Bold"}}
-
-    local buffer_diagnostics = M.diagnostics_by_buf[bufnr]
-    if not buffer_diagnostics then return end
-    local line_diagnostics = M.diagnostics_group_by_line(buffer_diagnostics)[line]
-    if not line_diagnostics then return end
+    local line_diagnostics = M.get_line_diagnostics()
+    if vim.tbl_isempty(line_diagnostics) then return end
 
     for i, diagnostic in ipairs(line_diagnostics) do
     -- for i, mark in ipairs(marks) do
@@ -876,9 +1012,11 @@ function M.locations_to_items(locations)
     end;
   })
   for _, d in ipairs(locations) do
-    local start = d.range.start
-    local fname = assert(vim.uri_to_fname(d.uri))
-    table.insert(grouped[fname], {start = start})
+    -- locations may be Location or LocationLink
+    local uri = d.uri or d.targetUri
+    local fname = assert(vim.uri_to_fname(uri))
+    local range = d.range or d.targetSelectionRange
+    table.insert(grouped[fname], {start = range.start})
   end
 
 
@@ -929,6 +1067,13 @@ function M.set_qflist(items)
   })
 end
 
+-- Acording to LSP spec, if the client set "symbolKind.valueSet",
+-- the client must handle it properly even if it receives a value outside the specification.
+-- https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_documentSymbol
+function M._get_symbol_kind_name(symbol_kind)
+  return protocol.SymbolKind[symbol_kind] or "Unknown"
+end
+
 --- Convert symbols to quickfix list items
 ---
 --@symbols DocumentSymbol[] or SymbolInformation[]
@@ -937,7 +1082,7 @@ function M.symbols_to_items(symbols, bufnr)
     for _, symbol in ipairs(_symbols) do
       if symbol.location then -- SymbolInformation type
         local range = symbol.location.range
-        local kind = protocol.SymbolKind[symbol.kind]
+        local kind = M._get_symbol_kind_name(symbol.kind)
         table.insert(_items, {
           filename = vim.uri_to_fname(symbol.location.uri),
           lnum = range.start.line + 1,
@@ -946,7 +1091,7 @@ function M.symbols_to_items(symbols, bufnr)
           text = '['..kind..'] '..symbol.name,
         })
       elseif symbol.range then -- DocumentSymbole type
-        local kind = protocol.SymbolKind[symbol.kind]
+        local kind = M._get_symbol_kind_name(symbol.kind)
         table.insert(_items, {
           -- bufnr = _bufnr,
           filename = vim.api.nvim_buf_get_name(_bufnr),
@@ -956,10 +1101,8 @@ function M.symbols_to_items(symbols, bufnr)
           text = '['..kind..'] '..symbol.name
         })
         if symbol.children then
-          for _, child in ipairs(symbol) do
-            for _, v in ipairs(_symbols_to_items(child, _items, _bufnr)) do
-              vim.list_extend(_items, v)
-            end
+          for _, v in ipairs(_symbols_to_items(symbol.children, _items, _bufnr)) do
+            vim.list_extend(_items, v)
           end
         end
       end
@@ -1015,14 +1158,26 @@ function M.try_trim_markdown_code_blocks(lines)
 end
 
 local str_utfindex = vim.str_utfindex
-function M.make_position_params()
+local function make_position_param()
   local row, col = unpack(api.nvim_win_get_cursor(0))
   row = row - 1
   local line = api.nvim_buf_get_lines(0, row, row+1, true)[1]
   col = str_utfindex(line, col)
+  return { line = row; character = col; }
+end
+
+function M.make_position_params()
   return {
     textDocument = M.make_text_document_params();
-    position = { line = row; character = col; }
+    position = make_position_param()
+  }
+end
+
+function M.make_range_params()
+  local position = make_position_param()
+  return {
+    textDocument = { uri = vim.uri_from_bufnr(0) },
+    range = { start = position; ["end"] = position; }
   }
 end
 

@@ -620,12 +620,20 @@ function protocol.make_client_capabilities()
         -- Send textDocument/didSave after saving (BufWritePost)
         didSave = true;
       };
+      codeAction = {
+        dynamicRegistration = false;
+
+        codeActionLiteralSupport = {
+          codeActionKind = {
+            valueSet = {};
+          };
+        };
+      };
       completion = {
         dynamicRegistration = false;
         completionItem = {
 
-          -- TODO(tjdevries): Is it possible to implement this in plain lua?
-          snippetSupport = false;
+          snippetSupport = true;
           commitCharactersSupport = false;
           preselectSupport = false;
           deprecatedSupport = false;
@@ -643,6 +651,18 @@ function protocol.make_client_capabilities()
 
         -- TODO(tjdevries): Implement this
         contextSupport = false;
+      };
+      declaration = {
+        linkSupport = true;
+      };
+      definition = {
+        linkSupport = true;
+      };
+      implementation = {
+        linkSupport = true;
+      };
+      typeDefinition = {
+        linkSupport = true;
       };
       hover = {
         dynamicRegistration = false;
@@ -677,7 +697,22 @@ function protocol.make_client_capabilities()
         hierarchicalDocumentSymbolSupport = true;
       };
     };
-    workspace = nil;
+    workspace = {
+      symbol = {
+        dynamicRegistration = false;
+        symbolKind = {
+          valueSet = (function()
+            local res = {}
+            for k in pairs(protocol.SymbolKind) do
+              if type(k) == 'number' then table.insert(res, k) end
+            end
+            return res
+          end)();
+        };
+        hierarchicalWorkspaceSymbolSupport = true;
+      };
+      applyEdit = true;
+    };
     experimental = nil;
   }
 end

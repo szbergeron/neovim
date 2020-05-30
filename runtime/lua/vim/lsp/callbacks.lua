@@ -3,6 +3,7 @@ local protocol = require 'vim.lsp.protocol'
 local util = require 'vim.lsp.util'
 local vim = vim
 local api = vim.api
+local buf = require 'vim.lsp.buf'
 
 local M = {}
 
@@ -11,13 +12,56 @@ local function err_message(...)
   api.nvim_command("redraw")
 end
 
+M['workspace/executeCommand'] = function(err, _)
+  if err then
+    error("Could not execute code action: "..err.message)
+  end
+end
+
+M['textDocument/codeAction'] = function(_, _, actions)
+  if actions == nil or vim.tbl_isempty(actions) then
+    print("No code actions available")
+    return
+  end
+
+  local option_strings = {"Code Actions:"}
+  for i, action in ipairs(actions) do
+    local title = action.title:gsub('\r\n', '\\r\\n')
+    title = title:gsub('\n', '\\n')
+    table.insert(option_strings, string.format("%d. %s", i, title))
+  end
+
+  local choice = vim.fn.inputlist(option_strings)
+  if choice < 1 or choice > #actions then
+    return
+  end
+  local action_chosen = actions[choice]
+  -- textDocument/codeAction can return either Command[] or CodeAction[].
+  -- If it is a CodeAction, it can have either an edit, a command or both.
+  -- Edits should be executed first
+  if action_chosen.edit or type(action_chosen.command) == "table" then
+    if action_chosen.edit then
+      util.apply_workspace_edit(action_chosen.edit)
+    end
+    if type(action_chosen.command) == "table" then
+      buf.execute_command(action_chosen.command)
+    end
+  else
+    buf.execute_command(action_chosen)
+  end
+end
+
 M['workspace/applyEdit'] = function(_, _, workspace_edit)
   if not workspace_edit then return end
   -- TODO(ashkan) Do something more with label?
   if workspace_edit.label then
     print("Workspace edit", workspace_edit.label)
   end
-  util.apply_workspace_edit(workspace_edit.edit)
+  local status, result = pcall(util.apply_workspace_edit, workspace_edit.edit)
+  return {
+    applied = status;
+    failureReason = result;
+  }
 end
 
 M['textDocument/publishDiagnostics'] = function(_, _, result)
@@ -54,13 +98,15 @@ M['textDocument/references'] = function(_, _, result)
   api.nvim_command("wincmd p")
 end
 
-M['textDocument/documentSymbol'] = function(_, _, result, _, bufnr)
+local symbol_callback = function(_, _, result, _, bufnr)
   if not result or vim.tbl_isempty(result) then return end
 
   util.set_qflist(util.symbols_to_items(result, bufnr))
   api.nvim_command("copen")
   api.nvim_command("wincmd p")
 end
+M['textDocument/documentSymbol'] = symbol_callback
+M['workspace/symbol'] = symbol_callback
 
 M['textDocument/rename'] = function(_, _, result)
   if not result then return end
@@ -196,12 +242,12 @@ end
 
 -- Add boilerplate error validation and logging for all of these.
 for k, fn in pairs(M) do
-  M[k] = function(err, method, params, client_id)
-    local _ = log.debug() and log.debug('default_callback', method, { params = params, client_id = client_id, err = err })
+  M[k] = function(err, method, params, client_id, bufnr)
+    log.debug('default_callback', method, { params = params, client_id = client_id, err = err, bufnr = bufnr })
     if err then
       error(tostring(err))
     end
-    return fn(err, method, params, client_id)
+    return fn(err, method, params, client_id, bufnr)
   end
 end
 

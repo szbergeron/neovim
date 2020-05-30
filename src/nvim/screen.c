@@ -2966,11 +2966,11 @@ win_line (
         }
       }
 
-      if (wp->w_p_brisbr && draw_state == WL_BRI - 1
+      if (wp->w_briopt_sbr && draw_state == WL_BRI - 1
           && n_extra == 0 && *p_sbr != NUL) {
         // draw indent after showbreak value
         draw_state = WL_BRI;
-      } else if (wp->w_p_brisbr && draw_state == WL_SBR && n_extra == 0) {
+      } else if (wp->w_briopt_sbr && draw_state == WL_SBR && n_extra == 0) {
         // after the showbreak, draw the breakindent
         draw_state = WL_BRI - 1;
       }
@@ -2994,7 +2994,13 @@ win_line (
           c_final = NUL;
           n_extra =
             get_breakindent_win(wp, ml_get_buf(wp->w_buffer, lnum, false));
-          if (wp->w_skipcol > 0 && wp->w_p_wrap) {
+          if (row == startrow) {
+            n_extra -= win_col_off2(wp);
+            if (n_extra < 0) {
+              n_extra = 0;
+            }
+          }
+          if (wp->w_skipcol > 0 && wp->w_p_wrap && wp->w_briopt_sbr) {
             need_showbreak = false;
           }
           // Correct end of highlighted area for 'breakindent',
@@ -5714,6 +5720,7 @@ void grid_puts_line_flush(bool set_cursor)
 static void start_search_hl(void)
 {
   if (p_hls && !no_hlsearch) {
+    end_search_hl();  // just in case it wasn't called before
     last_pat_prog(&search_hl.rm);
     // Set the time limit to 'redrawtime'.
     search_hl.tm = profile_setlimit(p_rdt);

@@ -571,6 +571,28 @@ describe('API', function()
       eq({0,7,1,0}, funcs.getpos('.'))
       eq(false, nvim('get_option', 'paste'))
     end)
+    it('Replace-mode', function()
+      -- Within single line
+      nvim('put', {'aabbccdd', 'eeffgghh', 'iijjkkll'}, "c", true, false)
+      command('normal l')
+      command('startreplace')
+      nvim('paste', '123456', true, -1)
+      expect([[
+      a123456d
+      eeffgghh
+      iijjkkll]])
+      command('%delete _')
+      -- Across lines
+      nvim('put', {'aabbccdd', 'eeffgghh', 'iijjkkll'}, "c", true, false)
+      command('normal l')
+      command('startreplace')
+      nvim('paste', '123\n456', true, -1)
+      expect([[
+      a123
+      456d
+      eeffgghh
+      iijjkkll]])
+    end)
     it('crlf=false does not break lines at CR, CRLF', function()
       nvim('paste', 'line 1\r\n\r\rline 2\nline 3\rline 4\r', false, -1)
       expect('line 1\r\n\r\rline 2\nline 3\rline 4\r')
@@ -1786,7 +1808,7 @@ describe('API', function()
       eq({id=1}, meths.get_current_buf())
     end)
 
-    it("doesn't cause BufEnter or BufWinEnter autocmds", function()
+    it("does not trigger BufEnter, BufWinEnter", function()
       command("let g:fired = v:false")
       command("au BufEnter,BufWinEnter * let g:fired = v:true")
 
@@ -1796,7 +1818,7 @@ describe('API', function()
       eq(false, eval('g:fired'))
     end)
 
-    it('|scratch-buffer|', function()
+    it('scratch-buffer', function()
       eq({id=2}, meths.create_buf(false, true))
       eq({id=3}, meths.create_buf(true, true))
       eq({id=4}, meths.create_buf(true, true))
@@ -1823,6 +1845,7 @@ describe('API', function()
         eq('nofile', meths.buf_get_option(b, 'buftype'))
         eq('hide', meths.buf_get_option(b, 'bufhidden'))
         eq(false, meths.buf_get_option(b, 'swapfile'))
+        eq(false, meths.buf_get_option(b, 'modeline'))
       end
 
       --
@@ -1838,8 +1861,9 @@ describe('API', function()
       eq('nofile', meths.buf_get_option(edited_buf, 'buftype'))
       eq('hide', meths.buf_get_option(edited_buf, 'bufhidden'))
       eq(false, meths.buf_get_option(edited_buf, 'swapfile'))
+      eq(false, meths.buf_get_option(edited_buf, 'modeline'))
 
-      -- scratch buffer can be wiped without error
+      -- Scratch buffer can be wiped without error.
       command('bwipe')
       screen:expect([[
         ^                    |
