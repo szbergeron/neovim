@@ -800,20 +800,44 @@ describe('LSP', function()
         make_edit(0, 0, 0, 0, {"123"});
         make_edit(1, 0, 1, 1, {"2"});
         make_edit(2, 0, 2, 2, {"3"});
+        make_edit(3, 2, 3, 4, {""});
       }
       exec_lua('vim.lsp.util.apply_text_edits(...)', edits, 1)
       eq({
         '123First line of text';
         '2econd line of text';
         '3ird line of text';
-        'Fourth line of text';
+        'Foth line of text';
+        'å å ɧ 汉语 ↥ 🤦 🦄';
+      }, buf_lines(1))
+    end)
+    it('handles edits with the same start position, applying changes in the order in the array', function()
+      local edits = {
+        make_edit(0, 6, 0, 10, {""});
+        make_edit(0, 6, 0, 6, {"REPLACE"});
+        make_edit(1, 0, 1, 3, {""});
+        make_edit(1, 0, 1, 0, {"123"});
+        make_edit(2, 16, 2, 18, {""});
+        make_edit(2, 16, 2, 16, {"XYZ"});
+        make_edit(3, 7, 3, 11, {"this"});
+        make_edit(3, 7, 3, 11, {"will"});
+        make_edit(3, 7, 3, 11, {"not "});
+        make_edit(3, 7, 3, 11, {"show"});
+        make_edit(3, 7, 3, 11, {"(but this will)"});
+      }
+      exec_lua('vim.lsp.util.apply_text_edits(...)', edits, 1)
+      eq({
+        'First REPLACE of text';
+        '123ond line of text';
+        'Third line of teXYZ';
+        'Fourth (but this will) of text';
         'å å ɧ 汉语 ↥ 🤦 🦄';
       }, buf_lines(1))
     end)
     it('applies complex edits', function()
       local edits = {
-        make_edit(0, 0, 0, 0, {"", "12"});
         make_edit(0, 0, 0, 0, {"3", "foo"});
+        make_edit(0, 0, 0, 0, {"", "12"});
         make_edit(0, 1, 0, 1, {"bar", "123"});
         make_edit(0, #"First ", 0, #"First line of text", {"guy"});
         make_edit(1, 0, 1, #'Second', {"baz"});
@@ -1231,7 +1255,7 @@ describe('LSP', function()
         ]])
       end)
     end)
-    describe('convert SymbolInformation[] to items', function()
+    it('convert SymbolInformation[] to items', function()
         local expected = {
           {
             col = 1,
@@ -1295,11 +1319,11 @@ describe('LSP', function()
   end)
 
   describe('lsp.util._get_completion_item_kind_name', function()
-    describe('returns the name specified by protocol', function()
+    it('returns the name specified by protocol', function()
       eq("Text", exec_lua("return vim.lsp.util._get_completion_item_kind_name(1)"))
       eq("TypeParameter", exec_lua("return vim.lsp.util._get_completion_item_kind_name(25)"))
     end)
-    describe('returns the name not specified by protocol', function()
+    it('returns the name not specified by protocol', function()
       eq("Unknown", exec_lua("return vim.lsp.util._get_completion_item_kind_name(nil)"))
       eq("Unknown", exec_lua("return vim.lsp.util._get_completion_item_kind_name(vim.NIL)"))
       eq("Unknown", exec_lua("return vim.lsp.util._get_completion_item_kind_name(1000)"))
@@ -1307,14 +1331,93 @@ describe('LSP', function()
   end)
 
   describe('lsp.util._get_symbol_kind_name', function()
-    describe('returns the name specified by protocol', function()
+    it('returns the name specified by protocol', function()
       eq("File", exec_lua("return vim.lsp.util._get_symbol_kind_name(1)"))
       eq("TypeParameter", exec_lua("return vim.lsp.util._get_symbol_kind_name(26)"))
     end)
-    describe('returns the name not specified by protocol', function()
+    it('returns the name not specified by protocol', function()
       eq("Unknown", exec_lua("return vim.lsp.util._get_symbol_kind_name(nil)"))
       eq("Unknown", exec_lua("return vim.lsp.util._get_symbol_kind_name(vim.NIL)"))
       eq("Unknown", exec_lua("return vim.lsp.util._get_symbol_kind_name(1000)"))
+    end)
+  end)
+
+  describe('lsp.util.jump_to_location', function()
+    local target_bufnr
+
+    before_each(function()
+      target_bufnr = exec_lua [[
+        local bufnr = vim.uri_to_bufnr("file://fake/uri")
+        local lines = {"1st line of text", "å å ɧ 汉语 ↥ 🤦 🦄"}
+        vim.api.nvim_buf_set_lines(bufnr, 0, 1, false, lines)
+        return bufnr
+      ]]
+    end)
+
+    local location = function(start_line, start_char, end_line, end_char)
+      return {
+        uri = "file://fake/uri",
+        range = {
+          start = { line = start_line, character = start_char },
+          ["end"] = { line = end_line, character = end_char },
+        },
+      }
+    end
+
+    local jump = function(msg)
+      eq(true, exec_lua('return vim.lsp.util.jump_to_location(...)', msg))
+      eq(target_bufnr, exec_lua[[return vim.fn.bufnr('%')]])
+      return {
+        line = exec_lua[[return vim.fn.line('.')]],
+        col = exec_lua[[return vim.fn.col('.')]],
+      }
+    end
+
+    it('jumps to a Location', function()
+      local pos = jump(location(0, 9, 0, 9))
+      eq(1, pos.line)
+      eq(10, pos.col)
+    end)
+
+    it('jumps to a LocationLink', function()
+      local pos = jump({
+          targetUri = "file://fake/uri",
+          targetSelectionRange = {
+            start = { line = 0, character = 4 },
+            ["end"] = { line = 0, character = 4 },
+          },
+          targetRange = {
+            start = { line = 1, character = 5 },
+            ["end"] = { line = 1, character = 5 },
+          },
+        })
+      eq(1, pos.line)
+      eq(5, pos.col)
+    end)
+
+    it('jumps to the correct multibyte column', function()
+      local pos = jump(location(1, 2, 1, 2))
+      eq(2, pos.line)
+      eq(4, pos.col)
+      eq('å', exec_lua[[return vim.fn.expand('<cword>')]])
+    end)
+  end)
+
+  describe('lsp.util._make_floating_popup_size', function()
+    before_each(function()
+      exec_lua [[ contents =
+      {"text tαxt txtα tex",
+      "text tααt tααt text",
+      "text tαxt tαxt"}
+      ]]
+    end)
+
+    it('calculates size correctly', function()
+      eq({19,3}, exec_lua[[ return {vim.lsp.util._make_floating_popup_size(contents)} ]])
+    end)
+
+    it('calculates size correctly with wrapping', function()
+      eq({15,5}, exec_lua[[ return {vim.lsp.util._make_floating_popup_size(contents,{width = 15, wrap_at = 14})} ]])
     end)
   end)
 end)

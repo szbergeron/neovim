@@ -897,7 +897,8 @@ function protocol.resolve_capabilities(server_capabilities)
         text_document_will_save = ifnil(textDocumentSync.willSave, false);
         text_document_will_save_wait_until = ifnil(textDocumentSync.willSaveWaitUntil, false);
         text_document_save = ifnil(textDocumentSync.save, false);
-        text_document_save_include_text = ifnil(textDocumentSync.save and textDocumentSync.save.includeText, false);
+        text_document_save_include_text = ifnil(type(textDocumentSync.save) == 'table'
+                                                and textDocumentSync.save.includeText, false);
       }
     else
       return nil, string.format("Invalid type for textDocumentSync: %q", type(textDocumentSync))
@@ -921,6 +922,28 @@ function protocol.resolve_capabilities(server_capabilities)
     general_properties.code_action = false
   else
     error("The server sent invalid codeActionProvider")
+  end
+
+  if server_capabilities.declarationProvider == nil then
+    general_properties.declaration = false
+  elseif type(server_capabilities.declarationProvider) == 'boolean' then
+    general_properties.declaration = server_capabilities.declarationProvider
+  elseif type(server_capabilities.declarationProvider) == 'table' then
+    -- TODO: support more detailed declarationProvider options.
+    general_properties.declaration = false
+  else
+    error("The server sent invalid declarationProvider")
+  end
+
+  if server_capabilities.typeDefinitionProvider == nil then
+    general_properties.type_definition = false
+  elseif type(server_capabilities.typeDefinitionProvider) == 'boolean' then
+    general_properties.type_definition = server_capabilities.typeDefinitionProvider
+  elseif type(server_capabilities.typeDefinitionProvider) == 'table' then
+    -- TODO: support more detailed typeDefinitionProvider options.
+    general_properties.type_definition = false
+  else
+    error("The server sent invalid typeDefinitionProvider")
   end
 
   if server_capabilities.implementationProvider == nil then

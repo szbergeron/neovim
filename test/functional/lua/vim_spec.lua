@@ -243,6 +243,8 @@ describe('lua stdlib', function()
       { "here be dragons", " ", false, { "here", "be", "dragons"} },
       { "axaby", "ab?", false, { '', 'x', 'y' } },
       { "f v2v v3v w2w ", "([vw])2%1", false, { 'f ', ' v3v ', ' ' } },
+      { "", "", false, {} },
+      { "", "a", false, { '' } },
       { "x*yz*oo*l", "*", true, { 'x', 'yz', 'oo', 'l' } },
     }
 
@@ -1162,14 +1164,6 @@ describe('lua stdlib', function()
         vim.g.wait_count = 0
         vim.wait(50, function() vim.g.wait_count = vim.g.wait_count + 1 end, 200)
         return vim.g.wait_count < 5
-      ]])
-    end)
-
-    it('should call callbacks more times with small `interval`', function()
-      eq(true, exec_lua [[
-        vim.g.wait_count = 0
-        vim.wait(50, function() vim.g.wait_count = vim.g.wait_count + 1 end, 5)
-        return vim.g.wait_count > 5
       ]])
     end)
 

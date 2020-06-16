@@ -507,6 +507,8 @@ function lsp.start_client(config)
       or (not client.resolved_capabilities.signature_help and method == 'textDocument/signatureHelp')
       or (not client.resolved_capabilities.goto_definition and method == 'textDocument/definition')
       or (not client.resolved_capabilities.implementation and method == 'textDocument/implementation')
+      or (not client.resolved_capabilities.declaration and method == 'textDocument/declaration')
+      or (not client.resolved_capabilities.type_definition and method == 'textDocument/typeDefinition')
       or (not client.resolved_capabilities.document_symbol and method == 'textDocument/documentSymbol')
       or (not client.resolved_capabilities.workspace_symbol and method == 'textDocument/workspaceSymbol')
     then
@@ -584,9 +586,7 @@ do
       old_utf16_size)
     local _ = log.debug() and log.debug("on_lines", bufnr, changedtick, firstline,
     lastline, new_lastline, old_byte_size, old_utf32_size, old_utf16_size, nvim_buf_get_lines(bufnr, firstline, new_lastline, true))
-    if old_byte_size == 0 then
-      return
-    end
+
     -- Don't do anything if there are no clients attached.
     if tbl_isempty(all_buffer_active_clients[bufnr] or {}) then
       return

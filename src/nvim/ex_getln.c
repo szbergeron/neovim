@@ -432,8 +432,8 @@ static uint8_t *command_line_enter(int firstc, long count, int indent)
     tv_dict_add_nr(dict, S_LEN("cmdlevel"), ccline.level);
     tv_dict_set_keys_readonly(dict);
     // not readonly:
-    tv_dict_add_special(dict, S_LEN("abort"),
-                        s->gotesc ? kSpecialVarTrue : kSpecialVarFalse);
+    tv_dict_add_bool(dict, S_LEN("abort"),
+                     s->gotesc ? kBoolVarTrue : kBoolVarFalse);
     try_enter(&tstate);
     apply_autocmds(EVENT_CMDLINELEAVE, (char_u *)firstcbuf, (char_u *)firstcbuf,
                    false, curbuf);
@@ -5361,12 +5361,12 @@ void globpath(char_u *path, char_u *file, garray_T *ga, int expand_options)
 
         // Concatenate new results to previous ones.
         ga_grow(ga, num_p);
+        // take over the pointers and put them in "ga"
         for (int i = 0; i < num_p; i++) {
-          ((char_u **)ga->ga_data)[ga->ga_len] = vim_strsave(p[i]);
+          ((char_u **)ga->ga_data)[ga->ga_len] = p[i];
           ga->ga_len++;
         }
-
-        FreeWild(num_p, p);
+        xfree(p);
       }
     }
   }

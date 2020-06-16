@@ -1591,6 +1591,8 @@ v:event		Dictionary of event data for the current |autocommand|.  Valid
 					operation.
 			regtype		Type of register as returned by
 					|getregtype()|.
+			visual		Selection is visual (as opposed to,
+					e.g., via motion).	
 			completed_item    Current selected complete item on
 					|CompleteChanged|, Is `{}` when no complete
 					item selected.
@@ -5504,6 +5506,11 @@ jobstart({cmd}[, {opts}])				*jobstart()*
 			      stdout data.
 		  |on_stderr|:  (function) Callback invoked when the job emits
 			      stderr data.
+		  overlapped: (boolean) Set FILE_FLAG_OVERLAPPED for the
+			      standard input/output passed to the child process.
+			      Normally you do not need to set this.
+			      (Only available on MS-Windows, On other
+			      platforms, this option is silently ignored.)
 		  pty:	      (boolean) Connect the job to a new pseudo
 			      terminal, and its streams to the master file
 			      descriptor. Then  `on_stderr` is ignored,
@@ -5833,6 +5840,7 @@ maparg({name} [, {mode} [, {abbr} [, {dict}]]])			*maparg()*
 		  "rhs"	     The {rhs} of the mapping as typed.
 		  "silent"   1 for a |:map-silent| mapping, else 0.
 		  "noremap"  1 if the {rhs} of the mapping is not remappable.
+		  "script"   1 if mapping was defined with <script>.
 		  "expr"     1 for an expression mapping (|:map-<expr>|).
 		  "buffer"   1 for a buffer local mapping (|:map-local|).
 		  "mode"     Modes for which the mapping is defined. In
