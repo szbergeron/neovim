@@ -362,6 +362,8 @@ size_t spell_check(
   size_t wrongcaplen = 0;
   int lpi;
   bool count_word = docount;
+  bool use_camel_case = *wp->w_s->b_p_spo != NUL;
+  bool camel_case = false;
 
   // A word never starts at a space or a control character. Return quickly
   // then, skipping over the character.
@@ -394,9 +396,23 @@ size_t spell_check(
   mi.mi_word = ptr;
   mi.mi_fend = ptr;
   if (spell_iswordp(mi.mi_fend, wp)) {
+    bool this_upper = false;  // init for gcc
+
+    if (use_camel_case) {
+      c = PTR2CHAR(mi.mi_fend);
+      this_upper = SPELL_ISUPPER(c);
+    }
+
     do {
       MB_PTR_ADV(mi.mi_fend);
-    } while (*mi.mi_fend != NUL && spell_iswordp(mi.mi_fend, wp));
+      if (use_camel_case) {
+        const bool prev_upper = this_upper;
+        c = PTR2CHAR(mi.mi_fend);
+        this_upper = SPELL_ISUPPER(c);
+        camel_case = !prev_upper && this_upper;
+      }
+    } while (*mi.mi_fend != NUL && spell_iswordp(mi.mi_fend, wp)
+             && !camel_case);
 
     if (capcol != NULL && *capcol == 0 && wp->w_s->b_cap_prog != NULL) {
       // Check word starting with capital letter.
@@ -427,6 +443,11 @@ size_t spell_check(
 
   (void)spell_casefold(ptr, (int)(mi.mi_fend - ptr), mi.mi_fword, MAXWLEN + 1);
   mi.mi_fwordlen = (int)STRLEN(mi.mi_fword);
+
+  if (camel_case) {
+    // introduce a fake word end space into the folded word.
+    mi.mi_fword[mi.mi_fwordlen - 1] = ' ';
+  }
 
   // The word is bad unless we recognize it.
   mi.mi_result = SP_BAD;
@@ -2007,7 +2028,7 @@ char_u *did_set_spelllang(win_T *wp)
     region = NULL;
     len = (int)STRLEN(lang);
 
-    if (!valid_spellang(lang)) {
+    if (!valid_spelllang(lang)) {
       continue;
     }
 
@@ -2237,7 +2258,7 @@ char_u *did_set_spelllang(win_T *wp)
 theend:
   xfree(spl_copy);
   recursive = false;
-  redraw_win_later(wp, NOT_VALID);
+  redraw_later(wp, NOT_VALID);
   return ret_msg;
 }
 
@@ -2930,8 +2951,6 @@ void spell_suggest(int count)
     memmove(p, line, c);
     STRCPY(p + c, stp->st_word);
     STRCAT(p, sug.su_badptr + stp->st_orglen);
-    ml_replace(curwin->w_cursor.lnum, p, false);
-    curwin->w_cursor.col = c;
 
     // For redo we use a change-word command.
     ResetRedobuff();
@@ -2940,7 +2959,10 @@ void spell_suggest(int count)
         stp->st_wordlen + sug.su_badlen - stp->st_orglen);
     AppendCharToRedobuff(ESC);
 
-    // After this "p" may be invalid.
+    // "p" may be freed here
+    ml_replace(curwin->w_cursor.lnum, p, false);
+    curwin->w_cursor.col = c;
+
     changed_bytes(curwin->w_cursor.lnum, c);
   } else
     curwin->w_cursor = prev_cursor;
@@ -3761,7 +3783,8 @@ static void suggest_trie_walk(suginfo_T *su, langp_T *lp, char_u *fword, bool so
       tword[sp->ts_twordlen] = NUL;
 
       if (sp->ts_prefixdepth <= PFD_NOTSPECIAL
-          && (sp->ts_flags & TSF_PREFIXOK) == 0) {
+          && (sp->ts_flags & TSF_PREFIXOK) == 0
+          && pbyts != NULL) {
         // There was a prefix before the word.  Check that the prefix
         // can be used with this word.
         // Count the length of the NULs in the prefix.  If there are
@@ -4402,8 +4425,6 @@ static void suggest_trie_walk(suginfo_T *su, langp_T *lp, char_u *fword, bool so
         ++sp->ts_curi;
       }
       break;
-
-      FALLTHROUGH;
 
     case STATE_INS:
       // Insert one byte.  Repeat this for each possible byte at this
@@ -5661,6 +5682,9 @@ check_suggestions (
   int len;
   hlf_T attr;
 
+  if (gap->ga_len == 0) {
+    return;
+  }
   stp = &SUG(*gap, 0);
   for (int i = gap->ga_len - 1; i >= 0; --i) {
     // Need to append what follows to check for "the the".
@@ -5763,14 +5787,14 @@ cleanup_suggestions (
 )
   FUNC_ATTR_NONNULL_ALL
 {
-  suggest_T   *stp = &SUG(*gap, 0);
-
   if (gap->ga_len > 0) {
     // Sort the list.
     qsort(gap->ga_data, (size_t)gap->ga_len, sizeof(suggest_T), sug_compare);
 
     // Truncate the list to the number of suggestions that will be displayed.
     if (gap->ga_len > keep) {
+      suggest_T *const stp = &SUG(*gap, 0);
+
       for (int i = keep; i < gap->ga_len; i++) {
         xfree(stp[i].st_word);
       }
@@ -6853,7 +6877,7 @@ void ex_spelldump(exarg_T *eap)
   if (curbuf->b_ml.ml_line_count > 1) {
     ml_delete(curbuf->b_ml.ml_line_count, false);
   }
-  redraw_later(NOT_VALID);
+  redraw_later(curwin, NOT_VALID);
 }
 
 // Go through all possible words and:

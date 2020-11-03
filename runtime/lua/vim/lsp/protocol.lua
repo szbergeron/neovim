@@ -2,6 +2,11 @@
 
 local protocol = {}
 
+--@private
+--- Returns {a} if it is not nil, otherwise returns {b}.
+---
+--@param a
+--@param b
 local function ifnil(a, b)
   if a == nil then return b end
   return a
@@ -9,12 +14,14 @@ end
 
 
 --[=[
--- Useful for interfacing with:
--- https://github.com/microsoft/language-server-protocol/raw/gh-pages/_specifications/specification-3-14.md
+--@private
+--- Useful for interfacing with:
+--- https://github.com/microsoft/language-server-protocol/raw/gh-pages/_specifications/specification-3-14.md
 function transform_schema_comments()
   nvim.command [[silent! '<,'>g/\/\*\*\|\*\/\|^$/d]]
   nvim.command [[silent! '<,'>s/^\(\s*\) \* \=\(.*\)/\1--\2/]]
 end
+--@private
 function transform_schema_to_table()
   transform_schema_comments()
   nvim.command [[silent! '<,'>s/: \S\+//]]
@@ -625,15 +632,18 @@ function protocol.make_client_capabilities()
 
         codeActionLiteralSupport = {
           codeActionKind = {
-            valueSet = {};
+            valueSet = vim.tbl_values(protocol.CodeActionKind);
           };
         };
       };
       completion = {
         dynamicRegistration = false;
         completionItem = {
+          -- Until we can actually expand snippet, move cursor and allow for true snippet experience,
+          -- this should be disabled out of the box.
+          -- However, users can turn this back on if they have a snippet plugin.
+          snippetSupport = false;
 
-          snippetSupport = true;
           commitCharactersSupport = false;
           preselectSupport = false;
           deprecatedSupport = false;
@@ -696,6 +706,10 @@ function protocol.make_client_capabilities()
         };
         hierarchicalDocumentSymbolSupport = true;
       };
+      rename = {
+        dynamicRegistration = false;
+        prepareSupport = true;
+      };
     };
     workspace = {
       symbol = {
@@ -712,6 +726,9 @@ function protocol.make_client_capabilities()
         hierarchicalWorkspaceSymbolSupport = true;
       };
       applyEdit = true;
+    };
+    callHierarchy = {
+      dynamicRegistration = false;
     };
     experimental = nil;
   }
@@ -904,6 +921,7 @@ function protocol.resolve_capabilities(server_capabilities)
       return nil, string.format("Invalid type for textDocumentSync: %q", type(textDocumentSync))
     end
   end
+  general_properties.completion = server_capabilities.completionProvider ~= nil
   general_properties.hover = server_capabilities.hoverProvider or false
   general_properties.goto_definition = server_capabilities.definitionProvider or false
   general_properties.find_references = server_capabilities.referencesProvider or false
@@ -912,14 +930,22 @@ function protocol.resolve_capabilities(server_capabilities)
   general_properties.workspace_symbol = server_capabilities.workspaceSymbolProvider or false
   general_properties.document_formatting = server_capabilities.documentFormattingProvider or false
   general_properties.document_range_formatting = server_capabilities.documentRangeFormattingProvider or false
+  general_properties.call_hierarchy = server_capabilities.callHierarchyProvider or false
+  general_properties.execute_command = server_capabilities.executeCommandProvider ~= nil
+
+  if server_capabilities.renameProvider == nil then
+    general_properties.rename = false
+  elseif type(server_capabilities.renameProvider) == 'boolean' then
+    general_properties.rename = server_capabilities.renameProvider
+  else
+    general_properties.rename = true
+  end
 
   if server_capabilities.codeActionProvider == nil then
     general_properties.code_action = false
-  elseif type(server_capabilities.codeActionProvider) == 'boolean' then
+  elseif type(server_capabilities.codeActionProvider) == 'boolean'
+    or type(server_capabilities.codeActionProvider) == 'table' then
     general_properties.code_action = server_capabilities.codeActionProvider
-  elseif type(server_capabilities.codeActionProvider) == 'table' then
-    -- TODO(ashkan) support CodeActionKind
-    general_properties.code_action = false
   else
     error("The server sent invalid codeActionProvider")
   end

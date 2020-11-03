@@ -607,8 +607,7 @@ int emsg_not_now(void)
 static bool emsg_multiline(const char *s, bool multiline)
 {
   int attr;
-  int ignore = false;
-  int severe;
+  bool ignore = false;
 
   // Skip this if not giving error messages at the moment.
   if (emsg_not_now()) {
@@ -617,9 +616,9 @@ static bool emsg_multiline(const char *s, bool multiline)
 
   called_emsg = true;
 
-  // If "emsg_severe" is TRUE: When an error exception is to be thrown,
+  // If "emsg_severe" is true: When an error exception is to be thrown,
   // prefer this message over previous messages for the same command.
-  severe = emsg_severe;
+  bool severe = emsg_severe;
   emsg_severe = false;
 
   if (!emsg_off || vim_strchr(p_debug, 't') != NULL) {
@@ -630,7 +629,7 @@ static bool emsg_multiline(const char *s, bool multiline)
      * when the message should be ignored completely (used for the
      * interrupt message).
      */
-    if (cause_errthrow((char_u *)s, severe, &ignore) == true) {
+    if (cause_errthrow((char_u *)s, severe, &ignore)) {
       if (!ignore) {
         did_emsg++;
       }
@@ -1217,7 +1216,7 @@ void wait_return(int redraw)
     ui_refresh();
   } else if (!skip_redraw) {
     if (redraw == true || (msg_scrolled != 0 && redraw != -1)) {
-      redraw_later(VALID);
+      redraw_later(curwin, VALID);
     }
     if (ui_has(kUIMessages)) {
       msg_ext_clear(true);
@@ -1622,7 +1621,7 @@ const char *str2special(const char **const sp, const bool replace_spaces,
 
     // Check for an illegal byte.
     if (MB_BYTE2LEN((uint8_t)(*str)) > len) {
-      transchar_nonprint((char_u *)buf, c);
+      transchar_nonprint(curbuf, (char_u *)buf, c);
       *sp = str + 1;
       return buf;
     }
@@ -1887,6 +1886,7 @@ void msg_puts_attr_len(const char *const str, const ptrdiff_t len, int attr)
   // wait-return prompt later.  Needed when scrolling, resetting
   // need_wait_return after some prompt, and then outputting something
   // without scrolling
+  // Not needed when only using CR to move the cursor.
   bool overflow = false;
   if (ui_has(kUIMessages)) {
     int count = msg_ext_visible + (msg_ext_overwrite ? 0 : 1);
@@ -1898,7 +1898,7 @@ void msg_puts_attr_len(const char *const str, const ptrdiff_t len, int attr)
     overflow = msg_scrolled != 0;
   }
 
-  if (overflow && !msg_scrolled_ign) {
+  if (overflow && !msg_scrolled_ign && strcmp(str, "\r") != 0) {
     need_wait_return = true;
   }
   msg_didany = true;  // remember that something was outputted
@@ -2000,7 +2000,7 @@ static void msg_puts_display(const char_u *str, int maxlen, int attr,
                               || (*s == TAB && msg_col <= 7)
                               || (utf_ptr2cells(s) > 1
                                   && msg_col <= 2))
-                           : (msg_col + t_col >= Columns - 1
+                           : ((*s != '\r' && msg_col + t_col >= Columns - 1)
                               || (*s == TAB
                                   && msg_col + t_col >= ((Columns - 1) & ~7))
                               || (utf_ptr2cells(s) > 1
@@ -2222,7 +2222,7 @@ void msg_scroll_up(bool may_throttle)
 ///
 /// Probably message scrollback storage should reimplented as a file_buffer, and
 /// message scrolling in TUI be reimplemented as a modal floating window. Then
-/// we get throttling "for free" using standard redraw_win_later code paths.
+/// we get throttling "for free" using standard redraw_later code paths.
 void msg_scroll_flush(void)
 {
   if (msg_grid.throttled) {

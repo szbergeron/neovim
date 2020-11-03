@@ -935,6 +935,21 @@ void ex_pydo3(exarg_T *eap)
   script_host_do_range("python3", eap);
 }
 
+void ex_perl(exarg_T *eap)
+{
+  script_host_execute("perl", eap);
+}
+
+void ex_perlfile(exarg_T *eap)
+{
+  script_host_execute_file("perl", eap);
+}
+
+void ex_perldo(exarg_T *eap)
+{
+  script_host_do_range("perl", eap);
+}
+
 // Command line expansion for :profile.
 static enum {
   PEXP_SUBCMD,          ///< expand :profile sub-commands
@@ -1984,9 +1999,16 @@ void ex_argadd(exarg_T *eap)
 /// ":argdelete"
 void ex_argdelete(exarg_T *eap)
 {
-  if (eap->addr_count > 0) {
-    // ":1,4argdel": Delete all arguments in the range.
-    if (eap->line2 > ARGCOUNT) {
+  if (eap->addr_count > 0 || *eap->arg == NUL) {
+    // ":argdel" works like ":.argdel"
+    if (eap->addr_count == 0) {
+      if (curwin->w_arg_idx >= ARGCOUNT) {
+        EMSG(_("E610: No argument to delete"));
+        return;
+      }
+      eap->line1 = eap->line2 = curwin->w_arg_idx + 1;
+    } else if (eap->line2 > ARGCOUNT) {
+      // ":1,4argdel": Delete all arguments in the range.
       eap->line2 = ARGCOUNT;
     }
     linenr_T n = eap->line2 - eap->line1 + 1;
@@ -2016,8 +2038,6 @@ void ex_argdelete(exarg_T *eap)
           curwin->w_arg_idx = ARGCOUNT - 1;
       }
     }
-  } else if (*eap->arg == NUL) {
-    EMSG(_(e_argreq));
   } else {
     do_arglist(eap->arg, AL_DEL, 0);
   }
@@ -2038,6 +2058,10 @@ void ex_listdo(exarg_T *eap)
     // Don't do syntax HL autocommands.  Skipping the syntax file is a
     // great speed improvement.
     save_ei = au_event_disable(",Syntax");
+
+    FOR_ALL_BUFFERS(buf) {
+      buf->b_flags &= ~BF_SYN_SET;
+    }
   }
 
   if (eap->cmdidx == CMD_windo
@@ -2232,9 +2256,32 @@ void ex_listdo(exarg_T *eap)
   }
 
   if (save_ei != NULL) {
+    buf_T *bnext;
+    aco_save_T aco;
+
     au_event_restore(save_ei);
-    apply_autocmds(EVENT_SYNTAX, curbuf->b_p_syn,
-                   curbuf->b_fname, true, curbuf);
+
+    for (buf_T *buf = firstbuf; buf != NULL; buf = bnext) {
+      bnext = buf->b_next;
+      if (buf->b_nwindows > 0 && (buf->b_flags & BF_SYN_SET)) {
+        buf->b_flags &= ~BF_SYN_SET;
+
+        // buffer was opened while Syntax autocommands were disabled,
+        // need to trigger them now.
+        if (buf == curbuf) {
+          apply_autocmds(EVENT_SYNTAX, curbuf->b_p_syn,
+                         curbuf->b_fname, true, curbuf);
+        } else {
+          aucmd_prepbuf(&aco, buf);
+          apply_autocmds(EVENT_SYNTAX, buf->b_p_syn,
+                         buf->b_fname, true, buf);
+          aucmd_restbuf(&aco);
+        }
+
+        // start over, in case autocommands messed things up.
+        bnext = firstbuf;
+      }
+    }
   }
 }
 
@@ -2316,7 +2363,7 @@ void ex_compiler(exarg_T *eap)
     do_unlet(S_LEN("b:current_compiler"), true);
 
     snprintf((char *)buf, bufsize, "compiler/%s.vim", eap->arg);
-    if (source_runtime(buf, DIP_ALL) == FAIL) {
+    if (source_in_path(p_rtp, buf, DIP_ALL) == FAIL) {
       EMSG2(_("E666: compiler not supported: %s"), eap->arg);
     }
     xfree(buf);
@@ -2534,6 +2581,7 @@ int do_in_runtimepath(char_u *name, int flags, DoInRuntimepathCB callback,
 /// return FAIL when no file could be sourced, OK otherwise.
 int source_runtime(char_u *name, int flags)
 {
+  flags |= (flags & DIP_NORTP) ? 0 : DIP_START;
   return source_in_path(p_rtp, name, flags);
 }
 
@@ -4152,7 +4200,7 @@ static void script_host_execute(char *name, exarg_T *eap)
     tv_list_append_number(args, (int)eap->line1);
     tv_list_append_number(args, (int)eap->line2);
 
-    (void)eval_call_provider(name, "execute", args);
+    (void)eval_call_provider(name, "execute", args, true);
   }
 }
 
@@ -4167,7 +4215,7 @@ static void script_host_execute_file(char *name, exarg_T *eap)
   // current range
   tv_list_append_number(args, (int)eap->line1);
   tv_list_append_number(args, (int)eap->line2);
-  (void)eval_call_provider(name, "execute_file", args);
+  (void)eval_call_provider(name, "execute_file", args, true);
 }
 
 static void script_host_do_range(char *name, exarg_T *eap)
@@ -4176,7 +4224,7 @@ static void script_host_do_range(char *name, exarg_T *eap)
   tv_list_append_number(args, (int)eap->line1);
   tv_list_append_number(args, (int)eap->line2);
   tv_list_append_string(args, (const char *)eap->arg, -1);
-  (void)eval_call_provider(name, "do_range", args);
+  (void)eval_call_provider(name, "do_range", args, true);
 }
 
 /// ":drop"

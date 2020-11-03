@@ -80,6 +80,7 @@
 #ifdef WIN32
 # include "nvim/os/pty_conpty_win.h"
 #endif
+#include "nvim/lua/executor.h"
 #include "nvim/api/private/helpers.h"
 #include "nvim/os/input.h"
 #include "nvim/os/lang.h"
@@ -173,6 +174,7 @@ static char_u   *p_syn;
 static char_u   *p_spc;
 static char_u   *p_spf;
 static char_u   *p_spl;
+static char_u   *p_spo;
 static long p_ts;
 static long p_tw;
 static int p_udf;
@@ -310,11 +312,14 @@ static char *(p_fdm_values[]) =       { "manual", "expr", "marker", "indent",
 static char *(p_fcl_values[]) =       { "all", NULL };
 static char *(p_cot_values[]) =       { "menu", "menuone", "longest", "preview",
                                         "noinsert", "noselect", NULL };
+#ifdef BACKSLASH_IN_FILENAME
+static char *(p_csl_values[]) =       { "slash", "backslash", NULL };
+#endif
 static char *(p_icm_values[]) =       { "nosplit", "split", NULL };
 static char *(p_scl_values[]) =       { "yes", "no", "auto", "auto:1", "auto:2",
   "auto:3", "auto:4", "auto:5", "auto:6", "auto:7", "auto:8", "auto:9",
   "yes:1", "yes:2", "yes:3", "yes:4", "yes:5", "yes:6", "yes:7", "yes:8",
-  "yes:9", NULL };
+  "yes:9", "number", NULL };
 static char *(p_fdc_values[]) =       { "auto:1", "auto:2",
   "auto:3", "auto:4", "auto:5", "auto:6", "auto:7", "auto:8", "auto:9",
   "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", NULL };
@@ -346,22 +351,23 @@ static char *strcpy_comma_escaped(char *dest, const char *src, const size_t len)
   return &dest[len + shift];
 }
 
-/// Compute length of a colon-separated value, doubled and with some suffixes
+/// Compute length of a ENV_SEPCHAR-separated value, doubled and with some
+/// suffixes
 ///
-/// @param[in]  val  Colon-separated array value.
+/// @param[in]  val  ENV_SEPCHAR-separated array value.
 /// @param[in]  common_suf_len  Length of the common suffix which is appended to
 ///                             each item in the array, twice.
 /// @param[in]  single_suf_len  Length of the suffix which is appended to each
 ///                             item in the array once.
 ///
-/// @return Length of the comma-separated string array that contains each item
-///         in the original array twice with suffixes with given length
+/// @return Length of the ENV_SEPCHAR-separated string array that contains each
+///         item in the original array twice with suffixes with given length
 ///         (common_suf is present after each new item, single_suf is present
 ///         after half of the new items) and with commas after each item, commas
 ///         inside the values are escaped.
-static inline size_t compute_double_colon_len(const char *const val,
-                                              const size_t common_suf_len,
-                                              const size_t single_suf_len)
+static inline size_t compute_double_env_sep_len(const char *const val,
+                                                const size_t common_suf_len,
+                                                const size_t single_suf_len)
   FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_PURE
 {
   if (val == NULL || *val == NUL) {
@@ -372,7 +378,7 @@ static inline size_t compute_double_colon_len(const char *const val,
   do {
     size_t dir_len;
     const char *dir;
-    iter = vim_env_iter(':', val, iter, &dir, &dir_len);
+    iter = vim_env_iter(ENV_SEPCHAR, val, iter, &dir, &dir_len);
     if (dir != NULL && dir_len > 0) {
       ret += ((dir_len + memcnt(dir, ',', dir_len) + common_suf_len
                + !after_pathsep(dir, dir + dir_len)) * 2
@@ -384,13 +390,13 @@ static inline size_t compute_double_colon_len(const char *const val,
 
 #define NVIM_SIZE (sizeof("nvim") - 1)
 
-/// Add directories to a comma-separated array from a colon-separated one
+/// Add directories to a ENV_SEPCHAR-separated array from a colon-separated one
 ///
 /// Commas are escaped in process. To each item PATHSEP "nvim" is appended in
 /// addition to suf1 and suf2.
 ///
 /// @param[in,out]  dest  Destination comma-separated array.
-/// @param[in]  val  Source colon-separated array.
+/// @param[in]  val  Source ENV_SEPCHAR-separated array.
 /// @param[in]  suf1  If not NULL, suffix appended to destination. Prior to it
 ///                   directory separator is appended. Suffix must not contain
 ///                   commas.
@@ -403,10 +409,10 @@ static inline size_t compute_double_colon_len(const char *const val,
 ///                      Otherwise in reverse.
 ///
 /// @return (dest + appended_characters_length)
-static inline char *add_colon_dirs(char *dest, const char *const val,
-                                   const char *const suf1, const size_t len1,
-                                   const char *const suf2, const size_t len2,
-                                   const bool forward)
+static inline char *add_env_sep_dirs(char *dest, const char *const val,
+                                     const char *const suf1, const size_t len1,
+                                     const char *const suf2, const size_t len2,
+                                     const bool forward)
   FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_NONNULL_RET FUNC_ATTR_NONNULL_ARG(1)
 {
   if (val == NULL || *val == NUL) {
@@ -416,8 +422,8 @@ static inline char *add_colon_dirs(char *dest, const char *const val,
   do {
     size_t dir_len;
     const char *dir;
-    iter = (forward ? vim_env_iter : vim_env_iter_rev)(':', val, iter, &dir,
-                                                       &dir_len);
+    iter = (forward ? vim_env_iter : vim_env_iter_rev)(ENV_SEPCHAR, val, iter,
+                                                       &dir, &dir_len);
     if (dir != NULL && dir_len > 0) {
       dest = strcpy_comma_escaped(dest, dir, dir_len);
       if (!after_pathsep(dest - 1, dest)) {
@@ -524,11 +530,17 @@ char *get_lib_dir(void)
 ///
 /// Windows: Uses "…/nvim-data" for kXDGDataHome to avoid storing
 /// configuration and data files in the same path. #4403
-static void set_runtimepath_default(void)
+///
+/// If "clean_arg" is true, Nvim was started with --clean.
+static void set_runtimepath_default(bool clean_arg)
 {
   size_t rtp_size = 0;
-  char *const data_home = stdpaths_get_xdg_var(kXDGDataHome);
-  char *const config_home = stdpaths_get_xdg_var(kXDGConfigHome);
+  char *const data_home = clean_arg
+    ? NULL
+    : stdpaths_get_xdg_var(kXDGDataHome);
+  char *const config_home = clean_arg
+    ? NULL
+    : stdpaths_get_xdg_var(kXDGConfigHome);
   char *const vimruntime = vim_getenv("VIMRUNTIME");
   char *const libdir = get_lib_dir();
   char *const data_dirs = stdpaths_get_xdg_var(kXDGDataDirs);
@@ -574,10 +586,11 @@ static void set_runtimepath_default(void)
       rtp_size += libdir_len + memcnt(libdir, ',', libdir_len) + 1;
     }
   }
-  rtp_size += compute_double_colon_len(data_dirs, NVIM_SIZE + 1 + SITE_SIZE + 1,
-                                       AFTER_SIZE + 1);
-  rtp_size += compute_double_colon_len(config_dirs, NVIM_SIZE + 1,
-                                       AFTER_SIZE + 1);
+  rtp_size += compute_double_env_sep_len(data_dirs,
+                                         NVIM_SIZE + 1 + SITE_SIZE + 1,
+                                         AFTER_SIZE + 1);
+  rtp_size += compute_double_env_sep_len(config_dirs, NVIM_SIZE + 1,
+                                         AFTER_SIZE + 1);
   if (rtp_size == 0) {
     return;
   }
@@ -585,20 +598,20 @@ static void set_runtimepath_default(void)
   char *rtp_cur = rtp;
   rtp_cur = add_dir(rtp_cur, config_home, config_len, kXDGConfigHome,
                     NULL, 0, NULL, 0);
-  rtp_cur = add_colon_dirs(rtp_cur, config_dirs, NULL, 0, NULL, 0, true);
+  rtp_cur = add_env_sep_dirs(rtp_cur, config_dirs, NULL, 0, NULL, 0, true);
   rtp_cur = add_dir(rtp_cur, data_home, data_len, kXDGDataHome,
                     "site", SITE_SIZE, NULL, 0);
-  rtp_cur = add_colon_dirs(rtp_cur, data_dirs, "site", SITE_SIZE, NULL, 0,
-                           true);
+  rtp_cur = add_env_sep_dirs(rtp_cur, data_dirs, "site", SITE_SIZE, NULL, 0,
+                             true);
   rtp_cur = add_dir(rtp_cur, vimruntime, vimruntime_len, kXDGNone,
                     NULL, 0, NULL, 0);
   rtp_cur = add_dir(rtp_cur, libdir, libdir_len, kXDGNone, NULL, 0, NULL, 0);
-  rtp_cur = add_colon_dirs(rtp_cur, data_dirs, "site", SITE_SIZE,
-                           "after", AFTER_SIZE, false);
+  rtp_cur = add_env_sep_dirs(rtp_cur, data_dirs, "site", SITE_SIZE,
+                             "after", AFTER_SIZE, false);
   rtp_cur = add_dir(rtp_cur, data_home, data_len, kXDGDataHome,
                     "site", SITE_SIZE, "after", AFTER_SIZE);
-  rtp_cur = add_colon_dirs(rtp_cur, config_dirs, "after", AFTER_SIZE, NULL, 0,
-                           false);
+  rtp_cur = add_env_sep_dirs(rtp_cur, config_dirs, "after", AFTER_SIZE, NULL, 0,
+                             false);
   rtp_cur = add_dir(rtp_cur, config_home, config_len, kXDGConfigHome,
                     "after", AFTER_SIZE, NULL, 0);
   // Strip trailing comma.
@@ -622,7 +635,8 @@ static void set_runtimepath_default(void)
 /// Initialize the options, first part.
 ///
 /// Called only once from main(), just after creating the first buffer.
-void set_init_1(void)
+/// If "clean_arg" is true, Nvim was started with --clean.
+void set_init_1(bool clean_arg)
 {
   int opt_idx;
 
@@ -765,7 +779,7 @@ void set_init_1(void)
                      true);
   // Set default for &runtimepath. All necessary expansions are performed in
   // this function.
-  set_runtimepath_default();
+  set_runtimepath_default(clean_arg);
 
   /*
    * Set all the options (except the terminal options) to their default
@@ -1347,11 +1361,11 @@ int do_set(
       // Disallow changing some options from modelines.
       if (opt_flags & OPT_MODELINE) {
         if (flags & (P_SECURE | P_NO_ML)) {
-          errmsg = (char_u *)_("E520: Not allowed in a modeline");
+          errmsg = (char_u *)N_("E520: Not allowed in a modeline");
           goto skip;
         }
         if ((flags & P_MLE) && !p_mle) {
-          errmsg = (char_u *)_(
+          errmsg = (char_u *)N_(
               "E992: Not allowed in a modeline when 'modelineexpr' is off");
           goto skip;
         }
@@ -1368,7 +1382,7 @@ int do_set(
 
       // Disallow changing some options in the sandbox
       if (sandbox != 0 && (flags & P_SECURE)) {
-        errmsg = (char_u *)_(e_sandbox);
+        errmsg = e_sandbox;
         goto skip;
       }
 
@@ -1704,6 +1718,7 @@ int do_set(
 #ifdef BACKSLASH_IN_FILENAME
                     && !((flags & P_EXPAND)
                          && vim_isfilec(arg[1])
+                         && !ascii_iswhite(arg[1])
                          && (arg[1] != '\\'
                              || (s == newval
                                  && arg[2] != '\\')))
@@ -2274,6 +2289,7 @@ void check_buf_options(buf_T *buf)
   check_string_option(&buf->b_s.b_p_spc);
   check_string_option(&buf->b_s.b_p_spf);
   check_string_option(&buf->b_s.b_p_spl);
+  check_string_option(&buf->b_s.b_p_spo);
   check_string_option(&buf->b_p_sua);
   check_string_option(&buf->b_p_cink);
   check_string_option(&buf->b_p_cino);
@@ -2538,8 +2554,8 @@ static bool valid_filetype(const char_u *val)
   return valid_name(val, ".-_");
 }
 
-/// Return true if "val" is a valid 'spellang' value.
-bool valid_spellang(const char_u *val)
+/// Return true if "val" is a valid 'spelllang' value.
+bool valid_spelllang(const char_u *val)
   FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
 {
   return valid_name(val, ".-_,@");
@@ -2550,7 +2566,7 @@ static bool valid_spellfile(const char_u *val)
   FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
 {
   for (const char_u *s = val; *s != NUL; s++) {
-    if (!vim_isfilec(*s) && *s != ',') {
+    if (!vim_isfilec(*s) && *s != ',' && *s != ' ') {
       return false;
     }
   }
@@ -3071,7 +3087,7 @@ ambw_end:
     const bool is_spellfile = varp == &(curwin->w_s->b_p_spf);
 
     if ((is_spellfile && !valid_spellfile(*varp))
-        || (!is_spellfile && !valid_spellang(*varp))) {
+        || (!is_spellfile && !valid_spelllang(*varp))) {
       errmsg = e_invarg;
     } else {
       errmsg = did_set_spell_option(is_spellfile);
@@ -3079,6 +3095,10 @@ ambw_end:
   } else if (varp == &(curwin->w_s->b_p_spc)) {
     // When 'spellcapcheck' is set compile the regexp program.
     errmsg = compile_cap_prog(curwin->w_s);
+  } else if (varp == &(curwin->w_s->b_p_spo)) {  // 'spelloptions'
+    if (**varp != NUL && STRCMP("camel", *varp) != 0) {
+      errmsg = e_invarg;
+    }
   } else if (varp == &p_sps) {  // 'spellsuggest'
     if (spell_check_sps() != OK) {
       errmsg = e_invarg;
@@ -3101,7 +3121,7 @@ ambw_end:
     } else {
       if (curwin->w_status_height) {
         curwin->w_redr_status = true;
-        redraw_later(VALID);
+        redraw_later(curwin, VALID);
       }
       curbuf->b_help = (curbuf->b_p_bt[0] == 'h');
       redraw_titles();
@@ -3171,10 +3191,24 @@ ambw_end:
     } else {
       completeopt_was_set();
     }
+#ifdef BACKSLASH_IN_FILENAME
+  } else if (gvarp == &p_csl) {  // 'completeslash'
+    if (check_opt_strings(p_csl, p_csl_values, false) != OK
+        || check_opt_strings(curbuf->b_p_csl, p_csl_values, false) != OK) {
+      errmsg = e_invarg;
+    }
+#endif
   } else if (varp == &curwin->w_p_scl) {
     // 'signcolumn'
     if (check_opt_strings(*varp, p_scl_values, false) != OK) {
       errmsg = e_invarg;
+    }
+    // When changing the 'signcolumn' to or from 'number', recompute the
+    // width of the number column if 'number' or 'relativenumber' is set.
+    if (((*oldval == 'n' && *(oldval + 1) == 'u')
+         || (*curwin->w_p_scl == 'n' && *(curwin->w_p_scl + 1) =='u'))
+        && (curwin->w_p_nu || curwin->w_p_rnu)) {
+      curwin->w_nrwidth_line_count = 0;
     }
   } else if (varp == &curwin->w_p_fdc || varp == &curwin->w_allbuf_opt.wo_fdc) {
     // 'foldcolumn'
@@ -3410,6 +3444,7 @@ ambw_end:
       // recursively, to avoid endless recurrence.
       apply_autocmds(EVENT_SYNTAX, curbuf->b_p_syn, curbuf->b_fname,
                      value_changed || syn_recursive == 1, curbuf);
+      curbuf->b_flags |= BF_SYN_SET;
       syn_recursive--;
     } else if (varp == &(curbuf->b_p_ft)) {
       // 'filetype' is set, trigger the FileType autocommand
@@ -3712,11 +3747,10 @@ static char_u *set_chars_option(win_T *wp, char_u **varp, bool set)
 /// Return error message or NULL.
 char_u *check_stl_option(char_u *s)
 {
-  int itemcnt = 0;
   int groupdepth = 0;
   static char_u errbuf[80];
 
-  while (*s && itemcnt < STL_MAX_ITEM) {
+  while (*s) {
     // Check for valid keys after % sequences
     while (*s && *s != '%') {
       s++;
@@ -3725,9 +3759,6 @@ char_u *check_stl_option(char_u *s)
       break;
     }
     s++;
-    if (*s != '%' && *s != ')') {
-      itemcnt++;
-    }
     if (*s == '%' || *s == STL_TRUNCMARK || *s == STL_SEPARATE) {
       s++;
       continue;
@@ -3768,9 +3799,6 @@ char_u *check_stl_option(char_u *s)
         return (char_u *)N_("E540: Unclosed expression sequence");
       }
     }
-  }
-  if (itemcnt >= STL_MAX_ITEM) {
-    return (char_u *)N_("E541: too many items");
   }
   if (groupdepth != 0) {
     return (char_u *)N_("E542: unbalanced groups");
@@ -4663,7 +4691,7 @@ static void check_redraw(uint32_t flags)
     redraw_curbuf_later(NOT_VALID);
   }
   if (flags & P_RWINONLY) {
-    redraw_later(NOT_VALID);
+    redraw_later(curwin, NOT_VALID);
   }
   if (doclear) {
     redraw_all_later(CLEAR);
@@ -5469,9 +5497,6 @@ static int put_setstring(FILE *fd, char *cmd, char *name,
 
       // replace home directory in the whole option value into "buf"
       buf = xmalloc(size);
-      if (buf == NULL) {
-        goto fail;
-      }
       home_replace(NULL, *valuep, buf, size, false);
 
       // If the option value is longer than MAXPATHL, we need to append
@@ -5479,10 +5504,7 @@ static int put_setstring(FILE *fd, char *cmd, char *name,
       // can be expanded when read back.
       if (size >= MAXPATHL && (flags & P_COMMA) != 0
           && vim_strchr(*valuep, ',') != NULL) {
-          part = xmalloc(size);
-        if (part == NULL) {
-          goto fail;
-        }
+        part = xmalloc(size);
 
         // write line break to clear the option, e.g. ':set rtp='
         if (put_eol(fd) == FAIL) {
@@ -5683,12 +5705,12 @@ void unset_global_local_option(char *name, void *from)
     case PV_LCS:
       clear_string_option(&((win_T *)from)->w_p_lcs);
       set_chars_option((win_T *)from, &((win_T *)from)->w_p_lcs, true);
-      redraw_win_later((win_T *)from, NOT_VALID);
+      redraw_later((win_T *)from, NOT_VALID);
       break;
     case PV_FCS:
       clear_string_option(&((win_T *)from)->w_p_fcs);
       set_chars_option((win_T *)from, &((win_T *)from)->w_p_fcs, true);
-      redraw_win_later((win_T *)from, NOT_VALID);
+      redraw_later((win_T *)from, NOT_VALID);
       break;
   }
 }
@@ -5843,6 +5865,9 @@ static char_u *get_varp(vimoption_T *p)
   case PV_COM:    return (char_u *)&(curbuf->b_p_com);
   case PV_CMS:    return (char_u *)&(curbuf->b_p_cms);
   case PV_CPT:    return (char_u *)&(curbuf->b_p_cpt);
+# ifdef BACKSLASH_IN_FILENAME
+  case PV_CSL:    return (char_u *)&(curbuf->b_p_csl);
+# endif
   case PV_CFU:    return (char_u *)&(curbuf->b_p_cfu);
   case PV_OFU:    return (char_u *)&(curbuf->b_p_ofu);
   case PV_EOL:    return (char_u *)&(curbuf->b_p_eol);
@@ -5880,6 +5905,7 @@ static char_u *get_varp(vimoption_T *p)
   case PV_SPC:    return (char_u *)&(curwin->w_s->b_p_spc);
   case PV_SPF:    return (char_u *)&(curwin->w_s->b_p_spf);
   case PV_SPL:    return (char_u *)&(curwin->w_s->b_p_spl);
+  case PV_SPO:    return (char_u *)&(curwin->w_s->b_p_spo);
   case PV_SW:     return (char_u *)&(curbuf->b_p_sw);
   case PV_TFU:    return (char_u *)&(curbuf->b_p_tfu);
   case PV_TS:     return (char_u *)&(curbuf->b_p_ts);
@@ -6129,6 +6155,9 @@ void buf_copy_options(buf_T *buf, int flags)
       buf->b_p_inf = p_inf;
       buf->b_p_swf = cmdmod.noswapfile ? false : p_swf;
       buf->b_p_cpt = vim_strsave(p_cpt);
+# ifdef BACKSLASH_IN_FILENAME
+      buf->b_p_csl = vim_strsave(p_csl);
+# endif
       buf->b_p_cfu = vim_strsave(p_cfu);
       buf->b_p_ofu = vim_strsave(p_ofu);
       buf->b_p_tfu = vim_strsave(p_tfu);
@@ -6159,6 +6188,7 @@ void buf_copy_options(buf_T *buf, int flags)
       (void)compile_cap_prog(&buf->b_s);
       buf->b_s.b_p_spf = vim_strsave(p_spf);
       buf->b_s.b_p_spl = vim_strsave(p_spl);
+      buf->b_s.b_p_spo = vim_strsave(p_spo);
       buf->b_p_inde = vim_strsave(p_inde);
       buf->b_p_indk = vim_strsave(p_indk);
       buf->b_p_fp = empty_option;
@@ -6778,7 +6808,8 @@ static void langmap_set(void)
 
 /// Return true if format option 'x' is in effect.
 /// Take care of no formatting when 'paste' is set.
-int has_format_option(int x)
+bool has_format_option(int x)
+  FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
 {
   if (p_paste) {
     return false;
@@ -7245,7 +7276,8 @@ unsigned int get_bkc_value(buf_T *buf)
 }
 
 /// Return the current end-of-line type: EOL_DOS, EOL_UNIX or EOL_MAC.
-int get_fileformat(buf_T *buf)
+int get_fileformat(const buf_T *buf)
+  FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_NONNULL_ALL
 {
   int c = *buf->b_p_ff;
 
@@ -7396,7 +7428,10 @@ int win_signcol_count(win_T *wp)
   int maximum = 1, needed_signcols;
   const char *scl = (const char *)wp->w_p_scl;
 
-  if (*scl == 'n') {
+  // Note: It checks "no" or "number" in 'signcolumn' option
+  if (*scl == 'n'
+      && (*(scl + 1) == 'o' || (*(scl + 1) == 'u'
+                                && (wp->w_p_nu || wp->w_p_rnu)))) {
     return 0;
   }
   needed_signcols = buf_signcols(wp->w_buffer);

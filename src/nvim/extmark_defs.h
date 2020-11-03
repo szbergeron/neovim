@@ -1,7 +1,7 @@
 #ifndef NVIM_EXTMARK_DEFS_H
 #define NVIM_EXTMARK_DEFS_H
 
-#include "nvim/pos.h"  // for colnr_T
+#include "nvim/types.h"
 #include "nvim/lib/kvec.h"
 
 typedef struct {
@@ -14,12 +14,20 @@ typedef kvec_t(VirtTextChunk) VirtText;
 
 typedef struct
 {
+  int hl_id;  // highlight group
+  VirtText virt_text;
+  // TODO(bfredl): style, signs, etc
+  bool shared;  // shared decoration, don't free
+} Decoration;
+
+typedef struct
+{
   uint64_t ns_id;
   uint64_t mark_id;
-  int hl_id;  // highlight group
-  // TODO(bfredl): virt_text is pretty larger than the rest,
-  // pointer indirection?
-  VirtText virt_text;
+  // TODO(bfredl): a lot of small allocations. Should probably use
+  // kvec_t(Decoration) as an arena. Alternatively, store ns_id/mark_id
+  // _inline_ in MarkTree and use the map only for decorations.
+  Decoration *decor;
 } ExtmarkItem;
 
 typedef struct undo_object ExtmarkUndoObject;
@@ -33,5 +41,22 @@ typedef enum {
   kExtmarkNoUndo,      // Operation should not be reversable
   kExtmarkUndoNoRedo,  // Operation should be undoable, but not redoable
 } ExtmarkOp;
+
+typedef struct {
+  NS ns_id;
+  bool active;
+  LuaRef redraw_start;
+  LuaRef redraw_buf;
+  LuaRef redraw_win;
+  LuaRef redraw_line;
+  LuaRef redraw_end;
+  LuaRef hl_def;
+  int hl_valid;
+} DecorationProvider;
+
+#define DECORATION_PROVIDER_INIT(ns_id) (DecorationProvider) \
+                                 { ns_id, false, LUA_NOREF, LUA_NOREF, \
+                                   LUA_NOREF, LUA_NOREF, LUA_NOREF, \
+                                   LUA_NOREF, -1 }
 
 #endif  // NVIM_EXTMARK_DEFS_H

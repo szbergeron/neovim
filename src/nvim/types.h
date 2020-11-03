@@ -16,10 +16,12 @@ typedef uint32_t u8char_T;
 // Opaque handle used by API clients to refer to various objects in vim
 typedef int handle_T;
 
-// Opaque handle to a lua value. Must be free with `executor_free_luaref` when
+// Opaque handle to a lua value. Must be free with `api_free_luaref` when
 // not needed anymore! LUA_NOREF represents missing reference, i e to indicate
 // absent callback etc.
 typedef int LuaRef;
+
+typedef handle_T NS;
 
 typedef struct expand expand_T;
 

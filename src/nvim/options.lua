@@ -453,6 +453,15 @@ return {
       defaults={if_true={vi="menu,preview"}}
     },
     {
+      full_name='completeslash', abbreviation='csl',
+      type='string', scope={'buffer'},
+      vi_def=true,
+      vim=true,
+      varname='p_csl',
+      enable_if='BACKSLASH_IN_FILENAME',
+      defaults={if_true={vi=""}}
+    },
+    {
       full_name='confirm', abbreviation='cf',
       type='bool', scope={'global'},
       vi_def=true,
@@ -1022,15 +1031,6 @@ return {
       defaults={if_true={vi=""}}
     },
     {
-      full_name='guifontset', abbreviation='gfs',
-      type='string', list='onecomma', scope={'global'},
-      deny_duplicates=true,
-      vi_def=true,
-      varname='p_guifontset',
-      redraw={'ui_option'},
-      defaults={if_true={vi=""}}
-    },
-    {
       full_name='guifontwide', abbreviation='gfw',
       type='string', list='onecomma', scope={'global'},
       deny_duplicates=true,
@@ -1271,7 +1271,11 @@ return {
       deny_duplicates=true,
       vi_def=true,
       varname='p_isi',
-      defaults={if_true={vi="@,48-57,_,192-255"}}
+      defaults={
+        condition='WIN32',
+        if_true={vi="@,48-57,_,128-167,224-235"},
+        if_false={vi="@,48-57,_,192-255"}
+      }
     },
     {
       full_name='iskeyword', abbreviation='isk',
@@ -1593,7 +1597,8 @@ return {
       full_name='mousefocus', abbreviation='mousef',
       type='bool', scope={'global'},
       vi_def=true,
-      enable_if=false,
+      redraw={'ui_option'},
+      varname='p_mousef',
       defaults={if_true={vi=false}}
     },
     {
@@ -2322,6 +2327,16 @@ return {
       expand=true,
       varname='p_sps',
       defaults={if_true={vi="best"}}
+    },
+    {
+      full_name='spelloptions', abbreviation='spo',
+      type='string', list='onecomma', scope={'buffer'},
+      deny_duplicates=true,
+      secure=true,
+      vi_def=true,
+      expand=true,
+      varname='p_spo',
+      defaults={if_true={vi="", vim=""}}
     },
     {
       full_name='splitbelow', abbreviation='sb',

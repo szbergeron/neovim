@@ -210,7 +210,8 @@ void filemess(buf_T *buf, char_u *name, char_u *s, int attr)
   if (msg_silent != 0) {
     return;
   }
-  add_quoted_fname((char *)IObuff, IOSIZE - 80, buf, (const char *)name);
+  add_quoted_fname((char *)IObuff, IOSIZE - 100, buf, (const char *)name);
+  // Avoid an over-long translation to cause trouble.
   xstrlcat((char *)IObuff, (const char *)s, IOSIZE);
   // For the first message may have to start a new line.
   // For further ones overwrite the previous one, reset msg_scroll before
@@ -300,6 +301,7 @@ readfile(
   int skip_read = false;
   context_sha256_T sha_ctx;
   int read_undo_file = false;
+  int split = 0;  // number of split lines
   linenr_T linecnt;
   int error = FALSE;                    /* errors encountered */
   int ff_error = EOL_UNKNOWN;           /* file format with errors */
@@ -348,6 +350,7 @@ readfile(
   char_u      *old_b_fname;
   int using_b_ffname;
   int using_b_fname;
+  static char *msg_is_a_directory = N_("is a directory");
 
   au_did_filetype = false;  // reset before triggering any autocommands
 
@@ -442,12 +445,23 @@ readfile(
   else
     msg_scroll = TRUE;          /* don't overwrite previous file message */
 
-  /*
-   * If the name is too long we might crash further on, quit here.
-   */
+  // If the name is too long we might crash further on, quit here.
   if (fname != NULL && *fname != NUL) {
-    if (STRLEN(fname) >= MAXPATHL) {
+    size_t namelen = STRLEN(fname);
+
+    // If the name is too long we might crash further on, quit here.
+    if (namelen >= MAXPATHL) {
       filemess(curbuf, fname, (char_u *)_("Illegal file name"), 0);
+      msg_end();
+      msg_scroll = msg_save;
+      return FAIL;
+    }
+
+    // If the name ends in a path separator, we can't open it.  Check here,
+    // because reading the file may actually work, but then creating the
+    // swap file may destroy it!  Reported on MS-DOS and Win 95.
+    if (after_pathsep((const char *)fname, (const char *)(fname + namelen))) {
+      filemess(curbuf, fname, (char_u *)_(msg_is_a_directory), 0);
       msg_end();
       msg_scroll = msg_save;
       return FAIL;
@@ -456,7 +470,6 @@ readfile(
 
   if (!read_buffer && !read_stdin && !read_fifo) {
     perm = os_getperm((const char *)fname);
-#ifdef UNIX
     // On Unix it is possible to read a directory, so we have to
     // check for it before os_open().
     if (perm >= 0 && !S_ISREG(perm)                 // not a regular file ...
@@ -472,7 +485,7 @@ readfile(
 # endif
         ) {
       if (S_ISDIR(perm)) {
-        filemess(curbuf, fname, (char_u *)_("is a directory"), 0);
+        filemess(curbuf, fname, (char_u *)_(msg_is_a_directory), 0);
       } else {
         filemess(curbuf, fname, (char_u *)_("is not a file"), 0);
       }
@@ -480,7 +493,6 @@ readfile(
       msg_scroll = msg_save;
       return S_ISDIR(perm) ? NOTDONE : FAIL;
     }
-#endif
   }
 
   /* Set default or forced 'fileformat' and 'binary'. */
@@ -539,13 +551,6 @@ readfile(
 
   if (fd < 0) {                     // cannot open at all
     msg_scroll = msg_save;
-#ifndef UNIX
-    // On non-unix systems we can't open a directory, check here.
-    if (os_isdir(fname)) {
-      filemess(curbuf, sfname, (char_u *)_("is a directory"), 0);
-      curbuf->b_p_ro = true;        // must use "w!" now
-    } else {
-#endif
     if (!newfile) {
       return FAIL;
     }
@@ -569,20 +574,21 @@ readfile(
           return FAIL;
         }
       }
-      if (dir_of_file_exists(fname))
-        filemess(curbuf, sfname, (char_u *)_("[New File]"), 0);
-      else
-        filemess(curbuf, sfname,
-            (char_u *)_("[New DIRECTORY]"), 0);
-      /* Even though this is a new file, it might have been
-       * edited before and deleted.  Get the old marks. */
+      if (dir_of_file_exists(fname)) {
+        filemess(curbuf, sfname, (char_u *)new_file_message(), 0);
+      } else {
+        filemess(curbuf, sfname, (char_u *)_("[New DIRECTORY]"), 0);
+      }
+      // Even though this is a new file, it might have been
+      // edited before and deleted.  Get the old marks.
       check_marks_read();
-      /* Set forced 'fileencoding'.  */
-      if (eap != NULL)
+      // Set forced 'fileencoding'.
+      if (eap != NULL) {
         set_forced_fenc(eap);
+      }
       apply_autocmds_exarg(EVENT_BUFNEWFILE, sfname, sfname,
-          FALSE, curbuf, eap);
-      /* remember the current fileformat */
+                           false, curbuf, eap);
+      // remember the current fileformat
       save_file_ff(curbuf);
 
       if (aborting())               /* autocmds may abort script processing */
@@ -602,9 +608,6 @@ readfile(
 
     return FAIL;
   }
-#ifndef UNIX
-  }
-#endif
 
   /*
    * Only set the 'ro' flag for readonly files the first time they are
@@ -1012,8 +1015,21 @@ retry:
      */
     {
       if (!skip_read) {
-        size = 0x10000L;                            /* use buffer >= 64K */
+        // Use buffer >= 64K.  Add linerest to double the size if the
+        // line gets very long, to avoid a lot of copying. But don't
+        // read more than 1 Mbyte at a time, so we can be interrupted.
+        size = 0x10000L + linerest;
+        if (size > 0x100000L) {
+          size = 0x100000L;
+        }
+      }
 
+      // Protect against the argument of lalloc() going negative.
+      if (size < 0 || size + linerest + 1 < 0 || linerest >= MAXCOL) {
+        split++;
+        *ptr = NL;  // split line by inserting a NL
+        size = 1;
+      } else if (!skip_read) {
         for (; size >= 10; size /= 2) {
           new_buffer = verbose_try_malloc((size_t)size + (size_t)linerest + 1);
           if (new_buffer) {
@@ -1782,6 +1798,7 @@ failed:
       linecnt--;
     }
     curbuf->deleted_bytes = 0;
+    curbuf->deleted_bytes2 = 0;
     curbuf->deleted_codepoints = 0;
     curbuf->deleted_codeunits = 0;
     linecnt = curbuf->b_ml.ml_line_count - linecnt;
@@ -1860,6 +1877,10 @@ failed:
       if (ff_error == EOL_DOS) {
         STRCAT(IObuff, _("[CR missing]"));
         c = TRUE;
+      }
+      if (split) {
+        STRCAT(IObuff, _("[long lines split]"));
+        c = true;
       }
       if (notconverted) {
         STRCAT(IObuff, _("[NOT converted]"));
@@ -2201,6 +2222,11 @@ static void check_marks_read(void)
   /* Always set b_marks_read; needed when 'shada' is changed to include
    * the ' parameter after opening a buffer. */
   curbuf->b_marks_read = true;
+}
+
+char *new_file_message(void)
+{
+  return shortmess(SHM_NEW) ? _("[New]") : _("[New File]");
 }
 
 /*
@@ -3513,8 +3539,8 @@ restore_backup:
       STRCAT(IObuff, _("[Device]"));
       c = TRUE;
     } else if (newfile) {
-      STRCAT(IObuff, shortmess(SHM_NEW) ? _("[New]") : _("[New File]"));
-      c = TRUE;
+      STRCAT(IObuff, new_file_message());
+      c = true;
     }
     if (no_eol) {
       msg_add_eol();
@@ -3567,7 +3593,7 @@ restore_backup:
    * the backup file our 'original' file.
    */
   if (*p_pm && dobackup) {
-    char *org = modname((char *)fname, (char *)p_pm, FALSE);
+    char *const org = modname((char *)fname, (char *)p_pm, false);
 
     if (backup != NULL) {
       /*
@@ -5529,7 +5555,6 @@ static void au_del_cmd(AutoCmd *ac)
 static void au_cleanup(void)
 {
   AutoPat     *ap, **prev_ap;
-  AutoCmd     *ac, **prev_ac;
   event_T event;
 
   if (autocmd_busy || !au_need_clean) {
@@ -5542,11 +5567,11 @@ static void au_cleanup(void)
     // Loop over all autocommand patterns.
     prev_ap = &(first_autopat[(int)event]);
     for (ap = *prev_ap; ap != NULL; ap = *prev_ap) {
-      // Loop over all commands for this pattern.
-      prev_ac = &(ap->cmds);
       bool has_cmd = false;
 
-      for (ac = *prev_ac; ac != NULL; ac = *prev_ac) {
+      // Loop over all commands for this pattern.
+      AutoCmd **prev_ac = &(ap->cmds);
+      for (AutoCmd *ac = *prev_ac; ac != NULL; ac = *prev_ac) {
         // Remove the command if the pattern is to be deleted or when
         // the command has been marked for deletion.
         if (ap->pat == NULL || ac->cmd == NULL) {

@@ -92,6 +92,10 @@ EXTERN struct nvim_stats_s {
 EXTERN int Rows INIT(= DFLT_ROWS);     // nr of rows in the screen
 EXTERN int Columns INIT(= DFLT_COLS);  // nr of columns in the screen
 
+EXTERN NS ns_hl_active INIT(= 0);         // current ns that defines highlights
+EXTERN bool ns_hl_changed INIT(= false);  // highlight need update
+
+
 // We use 64-bit file functions here, if available.  E.g. ftello() returns
 // off_t instead of long, which helps if long is 32 bit and off_t is 64 bit.
 // We assume that when fseeko() is available then ftello() is too.
@@ -124,8 +128,6 @@ typedef off_t off_T;
 // held down based on the MOD_MASK_* symbols that are read first.
 EXTERN int mod_mask INIT(= 0x0);  // current key modifiers
 
-
-EXTERN bool lua_attr_active INIT(= false);
 
 // Cmdline_row is the row where the command line starts, just below the
 // last window.
@@ -208,7 +210,7 @@ EXTERN int need_clr_eos INIT(= false);      // need to clear text before
                                             // displaying a message.
 EXTERN int emsg_skip INIT(= 0);             // don't display errors for
                                             // expression that is skipped
-EXTERN int emsg_severe INIT(= false);       // use message of next of several
+EXTERN bool emsg_severe INIT(= false);      // use message of next of several
                                             //  emsg() calls for throw
 EXTERN int did_endif INIT(= false);         // just had ":endif"
 EXTERN dict_T vimvardict;                   // Dictionary with v: variables
@@ -353,9 +355,11 @@ EXTERN int t_colors INIT(= 256);                // int value of T_CCO
 // position.  Search_match_lines is the number of lines after the match (0 for
 // a match within one line), search_match_endcol the column number of the
 // character just after the match in the last line.
-EXTERN int highlight_match INIT(= false);       // show search match pos
-EXTERN linenr_T search_match_lines;             // lines of of matched string
-EXTERN colnr_T search_match_endcol;             // col nr of match end
+EXTERN bool highlight_match INIT(= false);         // show search match pos
+EXTERN linenr_T search_match_lines;                // lines of of matched string
+EXTERN colnr_T search_match_endcol;                // col nr of match end
+EXTERN linenr_T search_first_line INIT(= 0);       // for :{FIRST},{last}s/pat
+EXTERN linenr_T search_last_line INIT(= MAXLNUM);  // for :{first},{LAST}s/pat
 
 EXTERN int no_smartcase INIT(= false);          // don't use 'smartcase' once
 
@@ -941,8 +945,10 @@ EXTERN char_u e_readonly[] INIT(= N_(
 EXTERN char_u e_readonlyvar[] INIT(= N_(
     "E46: Cannot change read-only variable \"%.*s\""));
 EXTERN char_u e_dictreq[] INIT(= N_("E715: Dictionary required"));
-EXTERN char_u e_toomanyarg[] INIT(= N_("E118: Too many arguments for function: %s"));
-EXTERN char_u e_dictkey[] INIT(= N_("E716: Key not present in Dictionary: %s"));
+EXTERN char_u e_toomanyarg[] INIT(= N_(
+    "E118: Too many arguments for function: %s"));
+EXTERN char_u e_dictkey[] INIT(= N_(
+    "E716: Key not present in Dictionary: \"%s\""));
 EXTERN char_u e_listreq[] INIT(= N_("E714: List required"));
 EXTERN char_u e_listdictarg[] INIT(= N_(
     "E712: Argument of %s must be a List or Dictionary"));

@@ -233,7 +233,7 @@ Terminal *terminal_open(TerminalOptions opts)
     snprintf(var, sizeof(var), "terminal_color_%d", i);
     char *name = get_config_string(var);
     if (name) {
-      color_val = name_to_color((uint8_t *)name);
+      color_val = name_to_color(name);
       xfree(name);
 
       if (color_val != -1) {
@@ -489,7 +489,17 @@ static int terminal_execute(VimState *state, int key)
       terminal_send_key(s->term, key);
   }
 
-  return curbuf->handle == s->term->buf_handle;
+  if (curbuf->terminal == NULL) {
+    return 0;
+  }
+  if (s->term != curbuf->terminal) {
+    invalidate_terminal(s->term, s->term->cursor.row, s->term->cursor.row + 1);
+    invalidate_terminal(curbuf->terminal,
+                        curbuf->terminal->cursor.row,
+                        curbuf->terminal->cursor.row + 1);
+    s->term = curbuf->terminal;
+  }
+  return 1;
 }
 
 void terminal_destroy(Terminal *term)
@@ -597,6 +607,7 @@ void terminal_get_line_attributes(Terminal *term, win_T *wp, int linenr,
     return;
   }
 
+  width = MIN(TERM_ATTRS_MAX, width);
   for (int col = 0; col < width; col++) {
     VTermScreenCell cell;
     bool color_valid = fetch_cell(term, row, col, &cell);
@@ -1049,7 +1060,7 @@ static bool send_mouse_event(Terminal *term, int c)
     curwin->w_redr_status = true;
     curwin = save_curwin;
     curbuf = curwin->w_buffer;
-    redraw_win_later(mouse_win, NOT_VALID);
+    redraw_later(mouse_win, NOT_VALID);
     invalidate_terminal(term, -1, -1);
     // Only need to exit focus if the scrolled window is the terminal window
     return mouse_win == curwin;

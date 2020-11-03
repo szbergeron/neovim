@@ -144,7 +144,7 @@ static const int included_patches[] = {
   1777,
   1776,
   1775,
-  // 1774,
+  1774,
   1773,
   1772,
   1771,
@@ -171,9 +171,9 @@ static const int included_patches[] = {
   1750,
   1749,
   1748,
-  // 1747,
+  1747,
   1746,
-  // 1745,
+  1745,
   // 1744,
   // 1743,
   1742,
@@ -206,7 +206,7 @@ static const int included_patches[] = {
   1715,
   1714,
   1713,
-  // 1712,
+  1712,
   1711,
   1710,
   1709,
@@ -250,7 +250,7 @@ static const int included_patches[] = {
   1671,
   1670,
   1669,
-  // 1668,
+  1668,
   1667,
   1666,
   1665,
@@ -327,9 +327,9 @@ static const int included_patches[] = {
   1594,
   1593,
   // 1592,
-  // 1591,
+  1591,
   1590,
-  // 1589,
+  1589,
   // 1588,
   1587,
   1586,
@@ -364,7 +364,7 @@ static const int included_patches[] = {
   1557,
   1556,
   1555,
-  // 1554,
+  1554,
   1553,
   1552,
   1551,
@@ -374,8 +374,8 @@ static const int included_patches[] = {
   1547,
   1546,
   1545,
-  // 1544,
-  // 1543,
+  1544,
+  1543,
   1542,
   1541,
   1540,
@@ -387,7 +387,7 @@ static const int included_patches[] = {
   1534,
   1533,
   1532,
-  // 1531,
+  1531,
   1530,
   1529,
   1528,
@@ -464,7 +464,7 @@ static const int included_patches[] = {
   1457,
   1456,
   // 1455,
-  // 1454,
+  1454,
   1453,
   1452,
   1451,
@@ -2119,13 +2119,13 @@ void list_in_columns(char_u **items, int size, int current)
 
 void list_lua_version(void)
 {
-  typval_T luaver_tv;
-  typval_T arg = { .v_type = VAR_UNKNOWN };  // No args.
-  char *luaver_expr = "((jit and jit.version) and jit.version or _VERSION)";
-  executor_eval_lua(cstr_as_string(luaver_expr), &arg, &luaver_tv);
-  assert(luaver_tv.v_type == VAR_STRING);
-  MSG(luaver_tv.vval.v_string);
-  xfree(luaver_tv.vval.v_string);
+  char *code = "return ((jit and jit.version) and jit.version or _VERSION)";
+  Error err = ERROR_INIT;
+  Object ret = nlua_exec(cstr_as_string(code), (Array)ARRAY_DICT_INIT, &err);
+  assert(!ERROR_SET(&err));
+  assert(ret.type == kObjectTypeString);
+  MSG(ret.data.string.data);
+  api_free_object(ret);
 }
 
 void list_version(void)

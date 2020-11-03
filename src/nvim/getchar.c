@@ -27,6 +27,7 @@
 #include "nvim/ex_docmd.h"
 #include "nvim/ex_getln.h"
 #include "nvim/func_attr.h"
+#include "nvim/lua/executor.h"
 #include "nvim/main.h"
 #include "nvim/mbyte.h"
 #include "nvim/memline.h"
@@ -455,6 +456,9 @@ void flush_buffers(flush_buffers_T flush_typeahead)
   typebuf.tb_silent = 0;
   cmd_silent = false;
   typebuf.tb_no_abbr_cnt = 0;
+  if (++typebuf.tb_change_cnt == 0) {
+    typebuf.tb_change_cnt = 1;
+  }
 }
 
 /*
@@ -1524,6 +1528,17 @@ int vgetc(void)
         c = utf_ptr2char(buf);
       }
 
+      // If mappings are enabled (i.e., not Ctrl-v) and the user directly typed
+      // something with a meta- or alt- modifier that was not mapped, interpret
+      // <M-x> as <Esc>x rather than as an unbound meta keypress. #8213
+      if (!no_mapping && KeyTyped
+          && (mod_mask == MOD_MASK_ALT || mod_mask == MOD_MASK_META)) {
+        mod_mask = 0;
+        stuffcharReadbuff(c);
+        u_sync(false);
+        c = ESC;
+      }
+
       break;
     }
   }
@@ -1534,6 +1549,9 @@ int vgetc(void)
    * avoid internally used Lists and Dicts to be freed.
    */
   may_garbage_collect = false;
+
+  // Exec lua callbacks for on_keystroke
+  nlua_execute_log_keystroke(c);
 
   return c;
 }
@@ -2037,14 +2055,19 @@ static int vgetorpeek(bool advance)
              */
             if (mp->m_expr) {
               int save_vgetc_busy = vgetc_busy;
+              const bool save_may_garbage_collect = may_garbage_collect;
 
               vgetc_busy = 0;
+              may_garbage_collect = false;
+
               save_m_keys = vim_strsave(mp->m_keys);
               save_m_str = vim_strsave(mp->m_str);
               s = eval_map_expr(save_m_str, NUL);
               vgetc_busy = save_vgetc_busy;
-            } else
+              may_garbage_collect = save_may_garbage_collect;
+            } else {
               s = mp->m_str;
+            }
 
             /*
              * Insert the 'to' part in the typebuf.tb_buf.
@@ -4181,7 +4204,6 @@ int put_escstr(FILE *fd, char_u *strstart, int what)
 {
   char_u      *str = strstart;
   int c;
-  int modifiers;
 
   // :map xx <Nop>
   if (*str == NUL && what == 1) {
@@ -4208,7 +4230,7 @@ int put_escstr(FILE *fd, char_u *strstart, int what)
      * when they are read back.
      */
     if (c == K_SPECIAL && what != 2) {
-      modifiers = 0x0;
+      int modifiers = 0;
       if (str[1] == KS_MODIFIER) {
         modifiers = str[2];
         str += 3;

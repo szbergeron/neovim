@@ -983,7 +983,7 @@ void preserve_exit(void)
 
   FOR_ALL_BUFFERS(buf) {
     if (buf->b_ml.ml_mfp != NULL && buf->b_ml.ml_mfp->mf_fname != NULL) {
-      mch_errmsg((uint8_t *)"Vim: preserving files...\n");
+      mch_errmsg("Vim: preserving files...\r\n");
       ui_flush();
       ml_sync_all(false, false, true);  // preserve all swap files
       break;
@@ -992,7 +992,7 @@ void preserve_exit(void)
 
   ml_close_all(false);              // close all memfiles, without deleting
 
-  mch_errmsg("Vim: Finished.\n");
+  mch_errmsg("Vim: Finished.\r\n");
 
   getout(1);
 }
@@ -1024,6 +1024,15 @@ void line_breakcheck(void)
 void fast_breakcheck(void)
 {
   if (++breakcheck_count >= BREAKCHECK_SKIP * 10) {
+    breakcheck_count = 0;
+    os_breakcheck();
+  }
+}
+
+// Like line_breakcheck() but check 100 times less often.
+void veryfast_breakcheck(void)
+{
+  if (++breakcheck_count >= BREAKCHECK_SKIP * 100) {
     breakcheck_count = 0;
     os_breakcheck();
   }

@@ -109,6 +109,8 @@ typedef struct {
 # include "ex_cmds.c.generated.h"
 #endif
 
+static int preview_bufnr = 0;
+
 /// ":ascii" and "ga" implementation
 void do_ascii(const exarg_T *const eap)
 {
@@ -133,7 +135,7 @@ void do_ascii(const exarg_T *const eap)
     char buf1[20];
     if (vim_isprintc_strict(c) && (c < ' ' || c > '~')) {
       char_u buf3[7];
-      transchar_nonprint(buf3, c);
+      transchar_nonprint(curbuf, buf3, c);
       vim_snprintf(buf1, sizeof(buf1), "  <%s>", (char *)buf3);
     } else {
       buf1[0] = NUL;
@@ -324,14 +326,19 @@ static int linelen(int *has_tab)
   int save;
   int len;
 
-  /* find the first non-blank character */
+  // Get the line.  If it's empty bail out early (could be the empty string
+  // for an unloaded buffer).
   line = get_cursor_line_ptr();
+  if (*line == NUL) {
+    return 0;
+  }
+  // find the first non-blank character
   first = skipwhite(line);
 
-  /* find the character after the last non-blank character */
+  // find the character after the last non-blank character
   for (last = first + STRLEN(first);
-       last > first && ascii_iswhite(last[-1]); --last)
-    ;
+       last > first && ascii_iswhite(last[-1]); last--) {
+  }
   save = *last;
   *last = NUL;
   // Get line length.
@@ -844,6 +851,11 @@ int do_move(linenr_T line1, linenr_T line2, linenr_T dest)
     return OK;
   }
 
+  bcount_t start_byte = ml_find_line_or_offset(curbuf, line1, NULL, true);
+  bcount_t end_byte = ml_find_line_or_offset(curbuf, line2+1, NULL, true);
+  bcount_t extent_byte = end_byte-start_byte;
+  bcount_t dest_byte = ml_find_line_or_offset(curbuf, dest+1, NULL, true);
+
   num_lines = line2 - line1 + 1;
 
   /*
@@ -878,6 +890,8 @@ int do_move(linenr_T line1, linenr_T line2, linenr_T dest)
   last_line = curbuf->b_ml.ml_line_count;
   mark_adjust_nofold(line1, line2, last_line - line2, 0L, kExtmarkNOOP);
   changed_lines(last_line - num_lines + 1, 0, last_line + 1, num_lines, false);
+  int line_off = 0;
+  bcount_t byte_off = 0;
   if (dest >= line2) {
     mark_adjust_nofold(line2 + 1, dest, -num_lines, 0L, kExtmarkNOOP);
     FOR_ALL_TAB_WINDOWS(tab, win) {
@@ -887,6 +901,8 @@ int do_move(linenr_T line1, linenr_T line2, linenr_T dest)
     }
     curbuf->b_op_start.lnum = dest - num_lines + 1;
     curbuf->b_op_end.lnum = dest;
+    line_off = -num_lines;
+    byte_off = -extent_byte;
   } else {
     mark_adjust_nofold(dest + 1, line1 - 1, num_lines, 0L, kExtmarkNOOP);
     FOR_ALL_TAB_WINDOWS(tab, win) {
@@ -902,11 +918,10 @@ int do_move(linenr_T line1, linenr_T line2, linenr_T dest)
                      -(last_line - dest - extra), 0L, kExtmarkNOOP);
 
   // extmarks are handled separately
-  int size = line2-line1+1;
-  int off = dest >= line2 ? -size : 0;
-  extmark_move_region(curbuf, line1-1, 0,
-                      line2-line1+1, 0,
-                      dest+off, 0, kExtmarkUndo);
+  extmark_move_region(curbuf, line1-1, 0, start_byte,
+                      line2-line1+1, 0, extent_byte,
+                      dest+line_off, 0, dest_byte+byte_off,
+                      kExtmarkUndo);
 
   changed_lines(last_line - num_lines + 1, 0, last_line + 1, -extra, false);
 
@@ -2225,11 +2240,9 @@ int do_ecmd(
     goto theend;
   }
 
-  /*
-   * if the file was changed we may not be allowed to abandon it
-   * - if we are going to re-edit the same file
-   * - or if we are the only window on this file and if ECMD_HIDE is FALSE
-   */
+  // If the file was changed we may not be allowed to abandon it:
+  // - if we are going to re-edit the same file
+  // - or if we are the only window on this file and if ECMD_HIDE is FALSE
   if (  ((!other_file && !(flags & ECMD_OLDBUF))
          || (curbuf->b_nwindows == 1
              && !(flags & (ECMD_HIDE | ECMD_ADDBUF))))
@@ -2482,8 +2495,12 @@ int do_ecmd(
       new_name = NULL;
     }
     set_bufref(&bufref, buf);
-    if (p_ur < 0 || curbuf->b_ml.ml_line_count <= p_ur) {
-      // Save all the text, so that the reload can be undone.
+
+    // If the buffer was used before, store the current contents so that
+    // the reload can be undone.  Do not do this if the (empty) buffer is
+    // being re-used for another file.
+    if (!(curbuf->b_flags & BF_NEVERLOADED)
+        && (p_ur < 0 || curbuf->b_ml.ml_line_count <= p_ur)) {
       // Sync first so that this is a separate undo-able action.
       u_sync(false);
       if (u_savecommon(0, curbuf->b_ml.ml_line_count + 1, 0, true)
@@ -3244,7 +3261,7 @@ static char_u *sub_parse_flags(char_u *cmd, subflags_T *subflags,
 /// @param do_buf_event If `true`, send buffer updates.
 /// @return buffer used for 'inccommand' preview
 static buf_T *do_sub(exarg_T *eap, proftime_T timeout,
-                     bool do_buf_event)
+                     bool do_buf_event, handle_T bufnr)
 {
   long i = 0;
   regmmatch_T regmatch;
@@ -3704,8 +3721,8 @@ static buf_T *do_sub(exarg_T *eap, proftime_T timeout,
               update_topline();
               validate_cursor();
               update_screen(SOME_VALID);
-              highlight_match = FALSE;
-              redraw_later(SOME_VALID);
+              highlight_match = false;
+              redraw_later(curwin, SOME_VALID);
 
               curwin->w_p_fen = save_p_fen;
               if (msg_row == Rows - 1)
@@ -3906,6 +3923,18 @@ static buf_T *do_sub(exarg_T *eap, proftime_T timeout,
 
           ADJUST_SUB_FIRSTLNUM();
 
+          // TODO(bfredl): adjust also in preview, because decorations?
+          // this has some robustness issues, will look into later.
+          bool do_splice = !preview;
+          bcount_t replaced_bytes = 0;
+          lpos_T start = regmatch.startpos[0], end = regmatch.endpos[0];
+          if (do_splice) {
+            for (i = 0; i < nmatch-1; i++) {
+              replaced_bytes += STRLEN(ml_get(lnum_start+i)) + 1;
+            }
+            replaced_bytes += end.col - start.col;
+          }
+
 
           // Now the trick is to replace CTRL-M chars with a real line
           // break.  This would make it impossible to insert a CTRL-M in
@@ -3949,17 +3978,14 @@ static buf_T *do_sub(exarg_T *eap, proftime_T timeout,
           current_match.end.col = new_endcol;
           current_match.end.lnum = lnum;
 
-          // TODO(bfredl): adjust in preview, because decorations?
-          // this has some robustness issues, will look into later.
-          if (!preview) {
-            lpos_T start = regmatch.startpos[0], end = regmatch.endpos[0];
+          if (do_splice) {
             int matchcols = end.col - ((end.lnum == start.lnum)
                                        ? start.col : 0);
             int subcols = new_endcol - ((lnum == lnum_start) ? start_col : 0);
             extmark_splice(curbuf, lnum_start-1, start_col,
-                           end.lnum-start.lnum, matchcols,
-                           lnum-lnum_start, subcols, kExtmarkUndo);
-            }
+                           end.lnum-start.lnum, matchcols, replaced_bytes,
+                           lnum-lnum_start, subcols, sublen-1, kExtmarkUndo);
+          }
         }
 
 
@@ -4198,7 +4224,7 @@ skip:
       }
       curbuf->b_changed = save_b_changed;  // preserve 'modified' during preview
       preview_buf = show_sub(eap, old_cursor, &preview_lines,
-                             pre_hl_id, pre_src_id);
+                             pre_hl_id, pre_src_id, bufnr);
       if (subsize > 0) {
         extmark_clear(orig_buf, pre_src_id, eap->line1-1, 0,
                       kv_last(preview_lines.subresults).end.lnum-1, MAXCOL);
@@ -5575,14 +5601,31 @@ void ex_helpclose(exarg_T *eap)
   }
 }
 
+/// Tries to enter to an existing window of given buffer. If no existing buffer
+/// is found, creates a new split.
+///
+/// Returns OK/FAIL.
+int sub_preview_win(buf_T *preview_buf)
+{
+  if (preview_buf != NULL) {
+    FOR_ALL_WINDOWS_IN_TAB(wp, curtab) {
+      if (wp->w_buffer == preview_buf) {
+        win_enter(wp, false);
+
+        return OK;
+      }
+    }
+  }
+  return win_split((int)p_cwh, WSP_BOT);
+}
+
 /// Shows the effects of the :substitute command being typed ('inccommand').
 /// If inccommand=split, shows a preview window and later restores the layout.
 static buf_T *show_sub(exarg_T *eap, pos_T old_cusr,
-                       PreviewLines *preview_lines, int hl_id, int src_id)
+                       PreviewLines *preview_lines, int hl_id, int src_id,
+                       handle_T bufnr)
   FUNC_ATTR_NONNULL_ALL
 {
-  static handle_T bufnr = 0;  // special buffer, re-used on each visit
-
   win_T *save_curwin = curwin;
   cmdmod_T save_cmdmod = cmdmod;
   char_u *save_shm_p = vim_strsave(p_shm);
@@ -5600,9 +5643,9 @@ static buf_T *show_sub(exarg_T *eap, pos_T old_cusr,
 
   bool outside_curline = (eap->line1 != old_cusr.lnum
                           || eap->line2 != old_cusr.lnum);
-  bool split = outside_curline && (*p_icm != 'n');
+  bool preview = outside_curline && (*p_icm != 'n');
   if (preview_buf == curbuf) {  // Preview buffer cannot preview itself!
-    split = false;
+    preview = false;
     preview_buf = NULL;
   }
 
@@ -5620,11 +5663,10 @@ static buf_T *show_sub(exarg_T *eap, pos_T old_cusr,
   linenr_T highest_num_line = 0;
   int col_width = 0;
 
-  if (split && win_split((int)p_cwh, WSP_BOT) != FAIL) {
+  if (preview && sub_preview_win(preview_buf) != FAIL) {
     buf_open_scratch(preview_buf ? bufnr : 0, "[Preview]");
     buf_clear();
     preview_buf = curbuf;
-    bufnr = preview_buf->handle;
     curbuf->b_p_bl = false;
     curbuf->b_p_ma = true;
     curbuf->b_p_ul = -1;
@@ -5709,11 +5751,11 @@ static buf_T *show_sub(exarg_T *eap, pos_T old_cusr,
   }
   xfree(str);
 
-  redraw_later(SOME_VALID);
+  redraw_later(curwin, SOME_VALID);
   win_enter(save_curwin, false);  // Return to original window
   update_topline();
 
-  // Update screen now. Must do this _before_ close_windows().
+  // Update screen now.
   int save_rd = RedrawingDisabled;
   RedrawingDisabled = 0;
   update_screen(SOME_VALID);
@@ -5727,6 +5769,17 @@ static buf_T *show_sub(exarg_T *eap, pos_T old_cusr,
   return preview_buf;
 }
 
+/// Closes any open windows for inccommand preview buffer.
+void close_preview_windows(void)
+{
+    block_autocmds();
+    buf_T *buf = preview_bufnr ? buflist_findnr(preview_bufnr) : NULL;
+    if (buf != NULL) {
+      close_windows(buf, false);
+    }
+    unblock_autocmds();
+}
+
 /// :substitute command
 ///
 /// If 'inccommand' is empty: calls do_sub().
@@ -5736,7 +5789,9 @@ void ex_substitute(exarg_T *eap)
 {
   bool preview = (State & CMDPREVIEW);
   if (*p_icm == NUL || !preview) {  // 'inccommand' is disabled
-    (void)do_sub(eap, profile_zero(), true);
+    close_preview_windows();
+    (void)do_sub(eap, profile_zero(), true, preview_bufnr);
+
     return;
   }
 
@@ -5760,8 +5815,13 @@ void ex_substitute(exarg_T *eap)
   // Don't show search highlighting during live substitution
   bool save_hls = p_hls;
   p_hls = false;
-  buf_T *preview_buf = do_sub(eap, profile_setlimit(p_rdt), false);
+  buf_T *preview_buf = do_sub(eap, profile_setlimit(p_rdt), false,
+                              preview_bufnr);
   p_hls = save_hls;
+
+  if (preview_buf != NULL) {
+    preview_bufnr = preview_buf->handle;
+  }
 
   if (save_changedtick != buf_get_changedtick(curbuf)) {
     // Undo invisibly. This also moves the cursor!
@@ -5772,10 +5832,7 @@ void ex_substitute(exarg_T *eap)
     curbuf->b_u_time_cur = save_b_u_time_cur;
     buf_set_changedtick(curbuf, save_changedtick);
   }
-  if (buf_valid(preview_buf)) {
-    // XXX: Must do this *after* u_undo_and_forget(), why?
-    close_windows(preview_buf, false);
-  }
+
   curbuf->b_p_ul = save_b_p_ul;
   curwin->w_p_cul = save_w_p_cul;   // Restore 'cursorline'
   curwin->w_p_cuc = save_w_p_cuc;   // Restore 'cursorcolumn'

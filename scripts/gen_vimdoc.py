@@ -39,6 +39,7 @@ Each function :help block is formatted as follows:
     parameter is marked as [out].
   - Each function documentation is separated by a single line.
 """
+import argparse
 import os
 import re
 import sys
@@ -50,12 +51,13 @@ import msgpack
 
 from xml.dom import minidom
 
-if sys.version_info[0] < 3 or sys.version_info[1] < 5:
-    print("requires Python 3.5+")
+MIN_PYTHON_VERSION = (3, 5)
+
+if sys.version_info < MIN_PYTHON_VERSION:
+    print("requires Python {}.{}+".format(*MIN_PYTHON_VERSION))
     sys.exit(1)
 
 DEBUG = ('DEBUG' in os.environ)
-TARGET = os.environ.get('TARGET', None)
 INCLUDE_C_DECL = ('INCLUDE_C_DECL' in os.environ)
 INCLUDE_DEPRECATED = ('INCLUDE_DEPRECATED' in os.environ)
 
@@ -66,6 +68,7 @@ base_dir = os.path.dirname(os.path.dirname(script_path))
 out_dir = os.path.join(base_dir, 'tmp-{target}-doc')
 filter_cmd = '%s %s' % (sys.executable, script_path)
 seen_funcs = set()
+msgs = []  # Messages to show on exit.
 lua2dox_filter = os.path.join(base_dir, 'scripts', 'lua2dox_filter')
 
 CONFIG = {
@@ -110,10 +113,12 @@ CONFIG = {
         'section_order': [
             'vim.lua',
             'shared.lua',
+            'uri.lua',
         ],
         'files': ' '.join([
             os.path.join(base_dir, 'src/nvim/lua/vim.lua'),
             os.path.join(base_dir, 'runtime/lua/vim/shared.lua'),
+            os.path.join(base_dir, 'runtime/lua/vim/uri.lua'),
         ]),
         'file_patterns': '*.lua',
         'fn_name_prefix': '',
@@ -126,6 +131,7 @@ CONFIG = {
         'module_override': {
             # `shared` functions are exposed on the `vim` module.
             'shared': 'vim',
+            'uri': 'vim',
         },
         'append_only': [
             'shared.lua',
@@ -189,7 +195,7 @@ xrefs = set()
 
 # Raises an error with details about `o`, if `cond` is in object `o`,
 # or if `cond()` is callable and returns True.
-def debug_this(cond, o):
+def debug_this(o, cond=True):
     name = ''
     if not isinstance(o, str):
         try:
@@ -201,6 +207,23 @@ def debug_this(cond, o):
             or (not callable(cond) and cond)
             or (not callable(cond) and cond in o)):
         raise RuntimeError('xxx: {}\n{}'.format(name, o))
+
+
+# Appends a message to a list which will be printed on exit.
+def msg(s):
+    msgs.append(s)
+
+
+# Print all collected messages.
+def msg_report():
+    for m in msgs:
+        print(f'    {m}')
+
+
+# Print collected messages, then throw an exception.
+def fail(s):
+    msg_report()
+    raise RuntimeError(s)
 
 
 def find_first(parent, name):
@@ -374,6 +397,7 @@ def update_params_map(parent, ret_map, width=62):
 def render_node(n, text, prefix='', indent='', width=62):
     """Renders a node as Vim help text, recursively traversing all descendants."""
     global fmt_vimhelp
+    global has_seen_preformatted
 
     def ind(s):
         return s if fmt_vimhelp else ''
@@ -386,6 +410,7 @@ def render_node(n, text, prefix='', indent='', width=62):
         o = get_text(n, preformatted=True)
         ensure_nl = '' if o[-1] == '\n' else '\n'
         text += '>{}{}\n<'.format(ensure_nl, o)
+
     elif is_inline(n):
         text = doc_wrap(get_text(n), indent=indent, width=width)
     elif n.nodeName == 'verbatim':
@@ -394,11 +419,17 @@ def render_node(n, text, prefix='', indent='', width=62):
         text += ' [verbatim] {}'.format(get_text(n))
     elif n.nodeName == 'listitem':
         for c in n.childNodes:
-            text += (
-                indent
-                + prefix
-                + render_node(c, text, indent=indent + (' ' * len(prefix)), width=width)
+            result = render_node(
+                c,
+                text,
+                indent=indent + (' ' * len(prefix)),
+                width=width
             )
+
+            if is_blank(result):
+                continue
+
+            text += indent + prefix + result
     elif n.nodeName in ('para', 'heading'):
         for c in n.childNodes:
             text += render_node(c, text, indent=indent, width=width)
@@ -433,6 +464,7 @@ def render_node(n, text, prefix='', indent='', width=62):
     else:
         raise RuntimeError('unhandled node type: {}\n{}'.format(
             n.nodeName, n.toprettyxml(indent='  ', newl='\n')))
+
     return text
 
 
@@ -496,6 +528,7 @@ def para_as_map(parent, indent='', width=62):
                         and '' != get_text(self_or_child(child)).strip()
                         and ' ' != text[-1]):
                     text += ' '
+
                 text += render_node(child, text, indent=indent, width=width)
                 prev = child
 
@@ -566,6 +599,7 @@ def fmt_node_as_vimhelp(parent, width=62, indent=''):
 
         rendered_blocks.append(clean_lines('\n'.join(chunks).strip()))
         rendered_blocks.append('')
+
     return clean_lines('\n'.join(rendered_blocks).strip())
 
 
@@ -678,6 +712,11 @@ def extract_from_xml(filename, target, width):
                 signature += vimtag.rjust(width - len(signature))
 
         paras = []
+        brief_desc = find_first(member, 'briefdescription')
+        if brief_desc:
+            for child in brief_desc.childNodes:
+                paras.append(para_as_map(child))
+
         desc = find_first(member, 'detaileddescription')
         if desc:
             for child in desc.childNodes:
@@ -763,7 +802,35 @@ def fmt_doxygen_xml_as_vimhelp(filename, target):
 
         func_doc = fn['signature'] + '\n'
         func_doc += textwrap.indent(clean_lines(doc), ' ' * 16)
+
+        # Verbatim handling.
         func_doc = re.sub(r'^\s+([<>])$', r'\1', func_doc, flags=re.M)
+
+        split_lines = func_doc.split('\n')
+        start = 0
+        while True:
+            try:
+                start = split_lines.index('>', start)
+            except ValueError:
+                break
+
+            try:
+                end = split_lines.index('<', start)
+            except ValueError:
+                break
+
+            split_lines[start + 1:end] = [
+                ('    ' + x).rstrip()
+                for x in textwrap.dedent(
+                    "\n".join(
+                        split_lines[start+1:end]
+                    )
+                ).split("\n")
+            ]
+
+            start = end
+
+        func_doc = "\n".join(split_lines)
 
         if 'Deprecated' in xrefs:
             deprecated_fns_txt[name] = func_doc
@@ -795,7 +862,7 @@ def delete_lines_below(filename, tokenstr):
         fp.writelines(lines[0:i])
 
 
-def main(config):
+def main(config, args):
     """Generates:
 
     1. Vim :help docs
@@ -804,7 +871,7 @@ def main(config):
     Doxygen is called and configured through stdin.
     """
     for target in CONFIG:
-        if TARGET is not None and target != TARGET:
+        if args.target is not None and target != args.target:
             continue
         mpack_file = os.path.join(
             base_dir, 'runtime', 'doc',
@@ -847,11 +914,21 @@ def main(config):
             groupxml = os.path.join(base, '%s.xml' %
                                     compound.getAttribute('refid'))
 
-            desc = find_first(minidom.parse(groupxml), 'detaileddescription')
+            group_parsed = minidom.parse(groupxml)
+            doc_list = []
+            brief_desc = find_first(group_parsed, 'briefdescription')
+            if brief_desc:
+                for child in brief_desc.childNodes:
+                    doc_list.append(fmt_node_as_vimhelp(child))
+
+            desc = find_first(group_parsed, 'detaileddescription')
             if desc:
                 doc = fmt_node_as_vimhelp(desc)
+
                 if doc:
-                    intros[groupname] = doc
+                    doc_list.append(doc)
+
+            intros[groupname] = "\n".join(doc_list)
 
         for compound in dom.getElementsByTagName('compound'):
             if compound.getAttribute('kind') != 'file':
@@ -859,9 +936,10 @@ def main(config):
 
             filename = get_text(find_first(compound, 'name'))
             if filename.endswith('.c') or filename.endswith('.lua'):
+                xmlfile = os.path.join(base,
+                                       '{}.xml'.format(compound.getAttribute('refid')))
                 # Extract unformatted (*.mpack).
-                fn_map, _ = extract_from_xml(os.path.join(base, '{}.xml'.format(
-                    compound.getAttribute('refid'))), target, width=9999)
+                fn_map, _ = extract_from_xml(xmlfile, target, width=9999)
                 # Extract formatted (:help).
                 functions_text, deprecated_text = fmt_doxygen_xml_as_vimhelp(
                     os.path.join(base, '{}.xml'.format(
@@ -894,7 +972,8 @@ def main(config):
                         sections[filename] = (title, helptag, doc)
                         fn_map_full.update(fn_map)
 
-        assert sections
+        if len(sections) == 0:
+            fail(f'no sections for target: {target}')
         if len(sections) > len(CONFIG[target]['section_order']):
             raise RuntimeError(
                 'found new modules "{}"; update the "section_order" map'.format(
@@ -904,7 +983,11 @@ def main(config):
 
         i = 0
         for filename in CONFIG[target]['section_order']:
-            title, helptag, section_doc = sections.pop(filename)
+            try:
+                title, helptag, section_doc = sections.pop(filename)
+            except KeyError:
+                msg(f'warning: empty docs, skipping (target={target}): {filename}')
+                continue
             i += 1
             if filename not in CONFIG[target]['append_only']:
                 docs += sep
@@ -927,7 +1010,10 @@ def main(config):
         with open(mpack_file, 'wb') as fp:
             fp.write(msgpack.packb(fn_map_full, use_bin_type=True))
 
-        shutil.rmtree(output_dir)
+        if not args.keep_tmpfiles:
+            shutil.rmtree(output_dir)
+
+    msg_report()
 
 
 def filter_source(filename):
@@ -943,6 +1029,18 @@ def filter_source(filename):
                          lambda m: m.group(1)+'_'.join(
                              re.split(r'[^\w]+', m.group(2))),
                          fp.read(), flags=re.M))
+
+
+def parse_args():
+    targets = ', '.join(CONFIG.keys())
+    ap = argparse.ArgumentParser()
+    ap.add_argument('source_filter', nargs='*',
+                    help="Filter source file(s)")
+    ap.add_argument('-k', '--keep-tmpfiles', action='store_true',
+                    help="Keep temporary files")
+    ap.add_argument('-t', '--target',
+                    help=f'One of ({targets}), defaults to "all"')
+    return ap.parse_args()
 
 
 Doxyfile = textwrap.dedent('''
@@ -981,9 +1079,10 @@ Doxyfile = textwrap.dedent('''
 ''')
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        filter_source(sys.argv[1])
+    args = parse_args()
+    if len(args.source_filter) > 0:
+        filter_source(args.source_filter[0])
     else:
-        main(Doxyfile)
+        main(Doxyfile, args)
 
 # vim: set ft=python ts=4 sw=4 tw=79 et :
