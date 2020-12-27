@@ -41,6 +41,7 @@
 #include "nvim/main.h"
 #include "nvim/mark.h"
 #include "nvim/extmark.h"
+#include "nvim/decoration.h"
 #include "nvim/mbyte.h"
 #include "nvim/memline.h"
 #include "nvim/message.h"
@@ -794,10 +795,7 @@ void ex_retab(exarg_T *eap)
       if (ptr[col] == NUL)
         break;
       vcol += chartabsize(ptr + col, (colnr_T)vcol);
-      if (has_mbyte)
-        col += (*mb_ptr2len)(ptr + col);
-      else
-        ++col;
+      col += utfc_ptr2len(ptr + col);
     }
     if (new_line == NULL)                   /* out of memory */
       break;
@@ -1048,13 +1046,13 @@ void do_bang(int addr_count, exarg_T *eap, int forceit, int do_in, int do_out)
   int len;
   int scroll_save = msg_scroll;
 
-  /*
-   * Disallow shell commands in restricted mode (-Z)
-   * Disallow shell commands from .exrc and .vimrc in current directory for
-   * security reasons.
-   */
-  if (check_restricted() || check_secure())
+  //
+  // Disallow shell commands from .exrc and .vimrc in current directory for
+  // security reasons.
+  //
+  if (check_secure()) {
     return;
+  }
 
   if (addr_count == 0) {                /* :! */
     msg_scroll = FALSE;             /* don't scroll here */
@@ -1184,6 +1182,7 @@ static void do_filter(
   char_u      *cmd_buf;
   buf_T       *old_curbuf = curbuf;
   int shell_flags = 0;
+  const int stmp = p_stmp;
 
   if (*cmd == NUL)          /* no filter command */
     return;
@@ -1212,16 +1211,16 @@ static void do_filter(
   if (do_out)
     shell_flags |= kShellOptDoOut;
 
-  if (!do_in && do_out && !p_stmp) {
+  if (!do_in && do_out && !stmp) {
     // Use a pipe to fetch stdout of the command, do not use a temp file.
     shell_flags |= kShellOptRead;
     curwin->w_cursor.lnum = line2;
-  } else if (do_in && !do_out && !p_stmp) {
+  } else if (do_in && !do_out && !stmp) {
     // Use a pipe to write stdin of the command, do not use a temp file.
     shell_flags |= kShellOptWrite;
     curbuf->b_op_start.lnum = line1;
     curbuf->b_op_end.lnum = line2;
-  } else if (do_in && do_out && !p_stmp) {
+  } else if (do_in && do_out && !stmp) {
     // Use a pipe to write stdin and fetch stdout of the command, do not
     // use a temp file.
     shell_flags |= kShellOptRead | kShellOptWrite;
@@ -1382,10 +1381,9 @@ do_shell(
     int flags             // may be SHELL_DOOUT when output is redirected
 )
 {
-  // Disallow shell commands in restricted mode (-Z)
   // Disallow shell commands from .exrc and .vimrc in current directory for
   // security reasons.
-  if (check_restricted() || check_secure()) {
+  if (check_secure()) {
     msg_end();
     return;
   }
@@ -1967,7 +1965,12 @@ void do_wqall(exarg_T *eap)
   }
 
   FOR_ALL_BUFFERS(buf) {
-    if (!bufIsChanged(buf) || bt_dontwrite(buf)) {
+    if (exiting
+        && buf->terminal
+        && channel_job_running((uint64_t)buf->b_p_channel)) {
+      no_write_message_nobang(buf);
+      error++;
+    } else if (!bufIsChanged(buf) || bt_dontwrite(buf)) {
       continue;
     }
     /*
@@ -2063,19 +2066,20 @@ static int check_readonly(int *forceit, buf_T *buf)
   return FALSE;
 }
 
-/*
- * Try to abandon current file and edit a new or existing file.
- * "fnum" is the number of the file, if zero use ffname/sfname.
- * "lnum" is the line number for the cursor in the new file (if non-zero).
- *
- * Return:
- * GETFILE_ERROR for "normal" error,
- * GETFILE_NOT_WRITTEN for "not written" error,
- * GETFILE_SAME_FILE for success
- * GETFILE_OPEN_OTHER for successfully opening another file.
- */
-int getfile(int fnum, char_u *ffname, char_u *sfname, int setpm, linenr_T lnum, int forceit)
+// Try to abandon the current file and edit a new or existing file.
+// "fnum" is the number of the file, if zero use "ffname_arg"/"sfname_arg".
+// "lnum" is the line number for the cursor in the new file (if non-zero).
+//
+// Return:
+// GETFILE_ERROR for "normal" error,
+// GETFILE_NOT_WRITTEN for "not written" error,
+// GETFILE_SAME_FILE for success
+// GETFILE_OPEN_OTHER for successfully opening another file.
+int getfile(int fnum, char_u *ffname_arg, char_u *sfname_arg, int setpm,
+            linenr_T lnum, int forceit)
 {
+  char_u *ffname = ffname_arg;
+  char_u *sfname = sfname_arg;
   int other;
   int retval;
   char_u      *free_me = NULL;
@@ -2702,7 +2706,7 @@ int do_ecmd(
     if (topline == 0 && command == NULL) {
       *so_ptr = 999;    // force cursor to be vertically centered in the window
     }
-    update_topline();
+    update_topline(curwin);
     curwin->w_scbind_pos = curwin->w_topline;
     *so_ptr = n;
     redraw_curbuf_later(NOT_VALID);     // redraw this buffer later
@@ -3027,20 +3031,6 @@ void ex_z(exarg_T *eap)
     curwin->w_cursor.col = 0;
   }
   ex_no_reprint = true;
-}
-
-// Check if the restricted flag is set.
-// If so, give an error message and return true.
-// Otherwise, return false.
-bool check_restricted(void)
-  FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
-{
-  if (restricted) {
-    EMSG(_("E145: Shell commands and some functionality not allowed"
-           " in restricted mode"));
-    return true;
-  }
-  return false;
 }
 
 /*
@@ -3450,13 +3440,13 @@ static buf_T *do_sub(exarg_T *eap, proftime_T timeout,
 
   sub_firstline = NULL;
 
-  /*
-   * ~ in the substitute pattern is replaced with the old pattern.
-   * We do it here once to avoid it to be replaced over and over again.
-   * But don't do it when it starts with "\=", then it's an expression.
-   */
-  if (!(sub[0] == '\\' && sub[1] == '='))
+  // ~ in the substitute pattern is replaced with the old pattern.
+  // We do it here once to avoid it to be replaced over and over again.
+  // But don't do it when it starts with "\=", then it's an expression.
+  assert(sub != NULL);
+  if (!(sub[0] == '\\' && sub[1] == '=')) {
     sub = regtilde(sub, p_magic);
+  }
 
   // Check for a match on each line.
   // If preview: limit to max('cmdwinheight', viewport).
@@ -3479,7 +3469,7 @@ static buf_T *do_sub(exarg_T *eap, proftime_T timeout,
       int lastone;
       long nmatch_tl = 0;               // nr of lines matched below lnum
       int do_again;                     // do it again after joining lines
-      int skip_match = false;
+      bool skip_match = false;
       linenr_T sub_firstlnum;           // nr of first sub line
 
       /*
@@ -3590,16 +3580,13 @@ static buf_T *do_sub(exarg_T *eap, proftime_T timeout,
         if (matchcol == prev_matchcol
             && regmatch.endpos[0].lnum == 0
             && matchcol == regmatch.endpos[0].col) {
-          if (sub_firstline[matchcol] == NUL)
-            /* We already were at the end of the line.  Don't look
-             * for a match in this line again. */
-            skip_match = TRUE;
-          else {
-            /* search for a match at next column */
-            if (has_mbyte)
-              matchcol += mb_ptr2len(sub_firstline + matchcol);
-            else
-              ++matchcol;
+          if (sub_firstline[matchcol] == NUL) {
+            // We already were at the end of the line.  Don't look
+            // for a match in this line again.
+            skip_match = true;
+          } else {
+            // search for a match at next column
+            matchcol += mb_ptr2len(sub_firstline + matchcol);
           }
           // match will be pushed to preview_lines, bring it into a proper state
           current_match.start.col = matchcol;
@@ -3623,7 +3610,7 @@ static buf_T *do_sub(exarg_T *eap, proftime_T timeout,
           if (nmatch > 1) {
             matchcol = (colnr_T)STRLEN(sub_firstline);
             nmatch = 1;
-            skip_match = TRUE;
+            skip_match = true;
           }
           sub_nsubs++;
           did_sub = TRUE;
@@ -3718,15 +3705,16 @@ static buf_T *do_sub(exarg_T *eap, proftime_T timeout,
                                     + len_change;
               highlight_match = TRUE;
 
-              update_topline();
+              update_topline(curwin);
               validate_cursor();
               update_screen(SOME_VALID);
               highlight_match = false;
               redraw_later(curwin, SOME_VALID);
 
               curwin->w_p_fen = save_p_fen;
-              if (msg_row == Rows - 1)
-                msg_didout = FALSE;                     /* avoid a scroll-up */
+              if (msg_row == Rows - 1) {
+                msg_didout = false;  // avoid a scroll-up
+              }
               msg_starthere();
               i = msg_scroll;
               msg_scroll = 0;                           /* truncate msg when
@@ -3745,8 +3733,8 @@ static buf_T *do_sub(exarg_T *eap, proftime_T timeout,
               typed = plain_vgetc();
               no_mapping--;
 
-              /* clear the question */
-              msg_didout = FALSE;               /* don't scroll up */
+              // clear the question
+              msg_didout = false;  // don't scroll up
               msg_col = 0;
               gotocmdline(TRUE);
 
@@ -3793,7 +3781,7 @@ static buf_T *do_sub(exarg_T *eap, proftime_T timeout,
              * get stuck when pressing 'n'. */
             if (nmatch > 1) {
               matchcol = (colnr_T)STRLEN(sub_firstline);
-              skip_match = TRUE;
+              skip_match = true;
             }
             goto skip;
           }
@@ -3923,17 +3911,13 @@ static buf_T *do_sub(exarg_T *eap, proftime_T timeout,
 
           ADJUST_SUB_FIRSTLNUM();
 
-          // TODO(bfredl): adjust also in preview, because decorations?
-          // this has some robustness issues, will look into later.
-          bool do_splice = !preview;
+          // TODO(bfredl): this has some robustness issues, look into later.
           bcount_t replaced_bytes = 0;
           lpos_T start = regmatch.startpos[0], end = regmatch.endpos[0];
-          if (do_splice) {
-            for (i = 0; i < nmatch-1; i++) {
-              replaced_bytes += STRLEN(ml_get(lnum_start+i)) + 1;
-            }
-            replaced_bytes += end.col - start.col;
+          for (i = 0; i < nmatch-1; i++) {
+            replaced_bytes += STRLEN(ml_get(lnum_start+i)) + 1;
           }
+          replaced_bytes += end.col - start.col;
 
 
           // Now the trick is to replace CTRL-M chars with a real line
@@ -3970,22 +3954,20 @@ static buf_T *do_sub(exarg_T *eap, proftime_T timeout,
                 STRMOVE(new_start, p1 + 1);
                 p1 = new_start - 1;
               }
-            } else if (has_mbyte) {
-              p1 += (*mb_ptr2len)(p1) - 1;
+            } else {
+              p1 += utfc_ptr2len(p1) - 1;
             }
           }
           size_t new_endcol = STRLEN(new_start);
           current_match.end.col = new_endcol;
           current_match.end.lnum = lnum;
 
-          if (do_splice) {
-            int matchcols = end.col - ((end.lnum == start.lnum)
-                                       ? start.col : 0);
-            int subcols = new_endcol - ((lnum == lnum_start) ? start_col : 0);
-            extmark_splice(curbuf, lnum_start-1, start_col,
-                           end.lnum-start.lnum, matchcols, replaced_bytes,
-                           lnum-lnum_start, subcols, sublen-1, kExtmarkUndo);
-          }
+          int matchcols = end.col - ((end.lnum == start.lnum)
+                                     ? start.col : 0);
+          int subcols = new_endcol - ((lnum == lnum_start) ? start_col : 0);
+          extmark_splice(curbuf, lnum_start-1, start_col,
+                         end.lnum-start.lnum, matchcols, replaced_bytes,
+                         lnum-lnum_start, subcols, sublen-1, kExtmarkUndo);
         }
 
 
@@ -5268,8 +5250,10 @@ void ex_viusage(exarg_T *eap)
 /// @param tagname  Name of the tags file ("tags" for English, "tags-fr" for
 ///                 French)
 /// @param add_help_tags  Whether to add the "help-tags" tag
-static void helptags_one(char_u *const dir, const char_u *const ext,
-                         const char_u *const tagfname, const bool add_help_tags)
+/// @param ignore_writeerr  ignore write error
+static void helptags_one(char_u *dir, const char_u *ext, const char_u *tagfname,
+                         bool add_help_tags, bool ignore_writeerr)
+  FUNC_ATTR_NONNULL_ALL
 {
   garray_T ga;
   int filecount;
@@ -5313,7 +5297,9 @@ static void helptags_one(char_u *const dir, const char_u *const ext,
 
   FILE *const fd_tags = os_fopen((char *)NameBuff, "w");
   if (fd_tags == NULL) {
-    EMSG2(_("E152: Cannot open %s for writing"), NameBuff);
+    if (!ignore_writeerr) {
+      EMSG2(_("E152: Cannot open %s for writing"), NameBuff);
+    }
     FreeWild(filecount, files);
     return;
   }
@@ -5461,7 +5447,9 @@ static void helptags_one(char_u *const dir, const char_u *const ext,
 }
 
 /// Generate tags in one help directory, taking care of translations.
-static void do_helptags(char_u *dirname, bool add_help_tags)
+static void do_helptags(char_u *dirname, bool add_help_tags,
+                        bool ignore_writeerr)
+  FUNC_ATTR_NONNULL_ALL
 {
   int len;
   garray_T ga;
@@ -5543,17 +5531,17 @@ static void do_helptags(char_u *dirname, bool add_help_tags)
       ext[1] = fname[5];
       ext[2] = fname[6];
     }
-    helptags_one(dirname, ext, fname, add_help_tags);
+    helptags_one(dirname, ext, fname, add_help_tags, ignore_writeerr);
   }
 
   ga_clear(&ga);
   FreeWild(filecount, files);
 }
 
-    static void
-helptags_cb(char_u *fname, void *cookie)
+static void helptags_cb(char_u *fname, void *cookie)
+  FUNC_ATTR_NONNULL_ALL
 {
-    do_helptags(fname, *(bool *)cookie);
+    do_helptags(fname, *(bool *)cookie, true);
 }
 
 /*
@@ -5582,7 +5570,7 @@ void ex_helptags(exarg_T *eap)
     if (dirname == NULL || !os_isdir(dirname)) {
       EMSG2(_("E150: Not a directory: %s"), eap->arg);
     } else {
-      do_helptags(dirname, add_help_tags);
+      do_helptags(dirname, add_help_tags, false);
     }
     xfree(dirname);
   }
@@ -5753,7 +5741,7 @@ static buf_T *show_sub(exarg_T *eap, pos_T old_cusr,
 
   redraw_later(curwin, SOME_VALID);
   win_enter(save_curwin, false);  // Return to original window
-  update_topline();
+  update_topline(curwin);
 
   // Update screen now.
   int save_rd = RedrawingDisabled;

@@ -1,17 +1,8 @@
 -- Protocol for the Microsoft Language Server Protocol (mslsp)
 
+local if_nil = vim.F.if_nil
+
 local protocol = {}
-
---@private
---- Returns {a} if it is not nil, otherwise returns {b}.
----
---@param a
---@param b
-local function ifnil(a, b)
-  if a == nil then return b end
-  return a
-end
-
 
 --[=[
 --@private
@@ -301,8 +292,9 @@ local constants = {
 }
 
 for k, v in pairs(constants) do
-  vim.tbl_add_reverse_lookup(v)
-  protocol[k] = v
+  local tbl = vim.deepcopy(v)
+  vim.tbl_add_reverse_lookup(tbl)
+  protocol[k] = tbl
 end
 
 --[=[
@@ -632,7 +624,11 @@ function protocol.make_client_capabilities()
 
         codeActionLiteralSupport = {
           codeActionKind = {
-            valueSet = vim.tbl_values(protocol.CodeActionKind);
+            valueSet = (function()
+              local res = vim.tbl_values(protocol.CodeActionKind)
+              table.sort(res)
+              return res
+            end)();
           };
         };
       };
@@ -652,7 +648,7 @@ function protocol.make_client_capabilities()
         completionItemKind = {
           valueSet = (function()
             local res = {}
-            for k in pairs(protocol.CompletionItemKind) do
+            for k in ipairs(protocol.CompletionItemKind) do
               if type(k) == 'number' then table.insert(res, k) end
             end
             return res
@@ -698,7 +694,7 @@ function protocol.make_client_capabilities()
         symbolKind = {
           valueSet = (function()
             local res = {}
-            for k in pairs(protocol.SymbolKind) do
+            for k in ipairs(protocol.SymbolKind) do
               if type(k) == 'number' then table.insert(res, k) end
             end
             return res
@@ -717,7 +713,7 @@ function protocol.make_client_capabilities()
         symbolKind = {
           valueSet = (function()
             local res = {}
-            for k in pairs(protocol.SymbolKind) do
+            for k in ipairs(protocol.SymbolKind) do
               if type(k) == 'number' then table.insert(res, k) end
             end
             return res
@@ -725,12 +721,16 @@ function protocol.make_client_capabilities()
         };
         hierarchicalWorkspaceSymbolSupport = true;
       };
+      workspaceFolders = true;
       applyEdit = true;
     };
     callHierarchy = {
       dynamicRegistration = false;
     };
     experimental = nil;
+    window = {
+      workDoneProgress = true;
+    }
   }
 end
 
@@ -909,12 +909,12 @@ function protocol.resolve_capabilities(server_capabilities)
       }
     elseif type(textDocumentSync) == 'table' then
       text_document_sync_properties = {
-        text_document_open_close = ifnil(textDocumentSync.openClose, false);
-        text_document_did_change = ifnil(textDocumentSync.change, TextDocumentSyncKind.None);
-        text_document_will_save = ifnil(textDocumentSync.willSave, false);
-        text_document_will_save_wait_until = ifnil(textDocumentSync.willSaveWaitUntil, false);
-        text_document_save = ifnil(textDocumentSync.save, false);
-        text_document_save_include_text = ifnil(type(textDocumentSync.save) == 'table'
+        text_document_open_close = if_nil(textDocumentSync.openClose, false);
+        text_document_did_change = if_nil(textDocumentSync.change, TextDocumentSyncKind.None);
+        text_document_will_save = if_nil(textDocumentSync.willSave, false);
+        text_document_will_save_wait_until = if_nil(textDocumentSync.willSaveWaitUntil, false);
+        text_document_save = if_nil(textDocumentSync.save, false);
+        text_document_save_include_text = if_nil(type(textDocumentSync.save) == 'table'
                                                 and textDocumentSync.save.includeText, false);
       }
     else
@@ -983,6 +983,28 @@ function protocol.resolve_capabilities(server_capabilities)
     error("The server sent invalid implementationProvider")
   end
 
+  local workspace = server_capabilities.workspace
+  local workspace_properties = {}
+  if workspace == nil or workspace.workspaceFolders == nil then
+    -- Defaults if omitted.
+    workspace_properties = {
+      workspace_folder_properties =  {
+        supported = false;
+        changeNotifications=false;
+      }
+    }
+  elseif type(workspace.workspaceFolders) == 'table' then
+    workspace_properties = {
+      workspace_folder_properties = {
+        supported = if_nil(workspace.workspaceFolders.supported, false);
+        changeNotifications = if_nil(workspace.workspaceFolders.changeNotifications, false);
+
+      }
+    }
+  else
+    error("The server sent invalid workspace")
+  end
+
   local signature_help_properties
   if server_capabilities.signatureHelpProvider == nil then
     signature_help_properties = {
@@ -1002,6 +1024,7 @@ function protocol.resolve_capabilities(server_capabilities)
   return vim.tbl_extend("error"
       , text_document_sync_properties
       , signature_help_properties
+      , workspace_properties
       , general_properties
       )
 end

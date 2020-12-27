@@ -220,13 +220,8 @@ int open_buffer(
     int perm;
 
     perm = os_getperm((const char *)curbuf->b_ffname);
-    if (perm >= 0 && (0
-# ifdef S_ISFIFO
-                      || S_ISFIFO(perm)
-# endif
-# ifdef S_ISSOCK
+    if (perm >= 0 && (0 || S_ISFIFO(perm)
                       || S_ISSOCK(perm)
-# endif
 # ifdef OPEN_CHR_FILES
                       || (S_ISCHR(perm)
                           && is_dev_fd_file(curbuf->b_ffname))
@@ -607,8 +602,12 @@ void close_buffer(win_T *win, buf_T *buf, int action, bool abort_if_last)
    * Remove the buffer from the list.
    */
   if (wipe_buf) {
-    xfree(buf->b_ffname);
-    xfree(buf->b_sfname);
+    if (buf->b_sfname != buf->b_ffname) {
+      XFREE_CLEAR(buf->b_sfname);
+    } else {
+      buf->b_sfname = NULL;
+    }
+    XFREE_CLEAR(buf->b_ffname);
     if (buf->b_prev == NULL) {
       firstbuf = buf->b_next;
     } else {
@@ -1642,12 +1641,23 @@ void do_autochdir(void)
 
 void no_write_message(void)
 {
-  EMSG(_("E37: No write since last change (add ! to override)"));
+  if (curbuf->terminal
+      && channel_job_running((uint64_t)curbuf->b_p_channel)) {
+    EMSG(_("E948: Job still running (add ! to end the job)"));
+  } else {
+    EMSG(_("E37: No write since last change (add ! to override)"));
+  }
 }
 
-void no_write_message_nobang(void)
+void no_write_message_nobang(const buf_T *const buf)
+  FUNC_ATTR_NONNULL_ALL
 {
-  EMSG(_("E37: No write since last change"));
+  if (buf->terminal
+      && channel_job_running((uint64_t)buf->b_p_channel)) {
+    EMSG(_("E948: Job still running"));
+  } else {
+    EMSG(_("E37: No write since last change"));
+  }
 }
 
 //
@@ -1687,15 +1697,18 @@ static inline void buf_init_changedtick(buf_T *const buf)
 ///                                 if the buffer already exists.
 /// This is the ONLY way to create a new buffer.
 ///
-/// @param ffname full path of fname or relative
-/// @param sfname short fname or NULL
+/// @param ffname_arg  full path of fname or relative
+/// @param sfname_arg  short fname or NULL
 /// @param lnum   preferred cursor line
 /// @param flags  BLN_ defines
 /// @param bufnr
 ///
 /// @return pointer to the buffer
-buf_T * buflist_new(char_u *ffname, char_u *sfname, linenr_T lnum, int flags)
+buf_T *buflist_new(char_u *ffname_arg, char_u *sfname_arg, linenr_T lnum,
+                   int flags)
 {
+  char_u *ffname = ffname_arg;
+  char_u *sfname = sfname_arg;
   buf_T       *buf;
 
   fname_expand(curbuf, &ffname, &sfname);       // will allocate ffname
@@ -1781,8 +1794,12 @@ buf_T * buflist_new(char_u *ffname, char_u *sfname, linenr_T lnum, int flags)
   buf->b_wininfo = xcalloc(1, sizeof(wininfo_T));
 
   if (ffname != NULL && (buf->b_ffname == NULL || buf->b_sfname == NULL)) {
+    if (buf->b_sfname != buf->b_ffname) {
+      XFREE_CLEAR(buf->b_sfname);
+    } else {
+      buf->b_sfname = NULL;
+    }
     XFREE_CLEAR(buf->b_ffname);
-    XFREE_CLEAR(buf->b_sfname);
     if (buf != curbuf) {
       free_buffer(buf);
     }
@@ -2772,28 +2789,32 @@ int buflist_name_nr(int fnum, char_u **fname, linenr_T *lnum)
   return OK;
 }
 
-/*
- * Set the file name for "buf"' to 'ffname', short file name to 'sfname'.
- * The file name with the full path is also remembered, for when :cd is used.
- * Returns FAIL for failure (file name already in use by other buffer)
- *	OK otherwise.
- */
-int
-setfname(
+// Set the file name for "buf" to "ffname_arg", short file name to
+// "sfname_arg".
+// The file name with the full path is also remembered, for when :cd is used.
+// Returns FAIL for failure (file name already in use by other buffer)
+//      OK otherwise.
+int setfname(
     buf_T *buf,
-    char_u *ffname,
-    char_u *sfname,
+    char_u *ffname_arg,
+    char_u *sfname_arg,
     bool message                  // give message when buffer already exists
 )
 {
+  char_u *ffname = ffname_arg;
+  char_u *sfname = sfname_arg;
   buf_T       *obuf = NULL;
   FileID file_id;
   bool file_id_valid = false;
 
   if (ffname == NULL || *ffname == NUL) {
     // Removing the name.
+    if (buf->b_sfname != buf->b_ffname) {
+      XFREE_CLEAR(buf->b_sfname);
+    } else {
+      buf->b_sfname = NULL;
+    }
     XFREE_CLEAR(buf->b_ffname);
-    XFREE_CLEAR(buf->b_sfname);
   } else {
     fname_expand(buf, &ffname, &sfname);    // will allocate ffname
     if (ffname == NULL) {                   // out of memory
@@ -2824,8 +2845,10 @@ setfname(
 #ifdef USE_FNAME_CASE
     path_fix_case(sfname);            // set correct case for short file name
 #endif
+    if (buf->b_sfname != buf->b_ffname) {
+      xfree(buf->b_sfname);
+    }
     xfree(buf->b_ffname);
-    xfree(buf->b_sfname);
     buf->b_ffname = ffname;
     buf->b_sfname = sfname;
   }
@@ -2851,7 +2874,9 @@ void buf_set_name(int fnum, char_u *name)
 
   buf = buflist_findnr(fnum);
   if (buf != NULL) {
-    xfree(buf->b_sfname);
+    if (buf->b_sfname != buf->b_ffname) {
+      xfree(buf->b_sfname);
+    }
     xfree(buf->b_ffname);
     buf->b_ffname = vim_strsave(name);
     buf->b_sfname = NULL;
@@ -3203,7 +3228,7 @@ void maketitle(void)
         int use_sandbox = false;
         int save_called_emsg = called_emsg;
 
-        use_sandbox = was_set_insecurely((char_u *)"titlestring", 0);
+        use_sandbox = was_set_insecurely(curwin, (char_u *)"titlestring", 0);
         called_emsg = false;
         build_stl_str_hl(curwin, (char_u *)buf, sizeof(buf),
                          p_titlestring, use_sandbox,
@@ -3314,7 +3339,7 @@ void maketitle(void)
         int use_sandbox = false;
         int save_called_emsg = called_emsg;
 
-        use_sandbox = was_set_insecurely((char_u *)"iconstring", 0);
+        use_sandbox = was_set_insecurely(curwin, (char_u *)"iconstring", 0);
         called_emsg = false;
         build_stl_str_hl(curwin, icon_str, sizeof(buf),
                          p_iconstring, use_sandbox,
@@ -3339,9 +3364,7 @@ void maketitle(void)
       len = (int)STRLEN(buf_p);
       if (len > 100) {
         len -= 100;
-        if (has_mbyte) {
-          len += (*mb_tail_off)(buf_p, buf_p + len) + 1;
-        }
+        len += (*mb_tail_off)(buf_p, buf_p + len) + 1;
         buf_p += len;
       }
       STRCPY(icon_str, buf_p);
@@ -3666,17 +3689,12 @@ int build_stl_str_hl(
       // truncate by removing bytes from the start of the group text.
       if (group_len > stl_items[stl_groupitems[groupdepth]].maxwid) {
         // { Determine the number of bytes to remove
-        long n;
-        if (has_mbyte) {
-          // Find the first character that should be included.
-          n = 0;
-          while (group_len >= stl_items[stl_groupitems[groupdepth]].maxwid) {
-            group_len -= ptr2cells(t + n);
-            n += (*mb_ptr2len)(t + n);
-          }
-        } else {
-          n = (long)(out_p - t)
-            - stl_items[stl_groupitems[groupdepth]].maxwid + 1;
+
+        // Find the first character that should be included.
+        long n = 0;
+        while (group_len >= stl_items[stl_groupitems[groupdepth]].maxwid) {
+          group_len -= ptr2cells(t + n);
+          n += (*mb_ptr2len)(t + n);
         }
         // }
 
@@ -4188,13 +4206,10 @@ int build_stl_str_hl(
 
       // If the item is too wide, truncate it from the beginning
       if (l > maxwid) {
-        while (l >= maxwid)
-          if (has_mbyte) {
-            l -= ptr2cells(t);
-            t += (*mb_ptr2len)(t);
-          } else {
-            l -= byte2cells(*t++);
-          }
+        while (l >= maxwid) {
+          l -= ptr2cells(t);
+          t += utfc_ptr2len(t);
+        }
 
         // Early out if there isn't enough room for the truncation marker
         if (out_p >= out_end_p) {
@@ -4377,26 +4392,19 @@ int build_stl_str_hl(
     // If the truncation point we found is beyond the maximum
     // length of the string, truncate the end of the string.
     if (width - vim_strsize(trunc_p) >= maxwidth) {
-      // If we are using a multi-byte encoding, walk from the beginning of the
+      // Walk from the beginning of the
       // string to find the last character that will fit.
-      if (has_mbyte) {
-        trunc_p = out;
-        width = 0;
-        for (;; ) {
-          width += ptr2cells(trunc_p);
-          if (width >= maxwidth) {
-            break;
-          }
-
-          // Note: Only advance the pointer if the next
-          //       character will fit in the available output space
-          trunc_p += (*mb_ptr2len)(trunc_p);
+      trunc_p = out;
+      width = 0;
+      for (;; ) {
+        width += ptr2cells(trunc_p);
+        if (width >= maxwidth) {
+          break;
         }
 
-      // Otherwise put the truncation point at the end, leaving enough room
-      // for a single-character truncation marker
-      } else {
-        trunc_p = out + maxwidth - 1;
+        // Note: Only advance the pointer if the next
+        //       character will fit in the available output space
+        trunc_p += utfc_ptr2len(trunc_p);
       }
 
       // Ignore any items in the statusline that occur after
@@ -4415,16 +4423,10 @@ int build_stl_str_hl(
     // Truncate at the truncation point we found
     } else {
       // { Determine how many bytes to remove
-      long trunc_len;
-      if (has_mbyte) {
-        trunc_len = 0;
-        while (width >= maxwidth) {
-          width     -= ptr2cells(trunc_p + trunc_len);
-          trunc_len += (*mb_ptr2len)(trunc_p + trunc_len);
-        }
-      } else {
-        // Truncate an extra character so we can insert our `<`.
-        trunc_len = (width - maxwidth) + 1;
+      long trunc_len = 0;
+      while (width >= maxwidth) {
+        width     -= ptr2cells(trunc_p + trunc_len);
+        trunc_len += utfc_ptr2len(trunc_p + trunc_len);
       }
       // }
 
@@ -4650,16 +4652,18 @@ static bool append_arg_number(win_T *wp, char_u *buf, int buflen, bool add_file)
   return true;
 }
 
-/*
- * Make "ffname" a full file name, set "sfname" to "ffname" if not NULL.
- * "ffname" becomes a pointer to allocated memory (or NULL).
- */
+// Make "*ffname" a full file name, set "*sfname" to "*ffname" if not NULL.
+// "*ffname" becomes a pointer to allocated memory (or NULL).
+// When resolving a link both "*sfname" and "*ffname" will point to the same
+// allocated memory.
+// The "*ffname" and "*sfname" pointer values on call will not be freed.
+// Note that the resulting "*ffname" pointer should be considered not allocaed.
 void fname_expand(buf_T *buf, char_u **ffname, char_u **sfname)
 {
-  if (*ffname == NULL) {        // if no file name given, nothing to do
+  if (*ffname == NULL) {  // no file name given, nothing to do
     return;
   }
-  if (*sfname == NULL) {        // if no short file name given, use ffname
+  if (*sfname == NULL) {  // no short file name given, use ffname
     *sfname = *ffname;
   }
   *ffname = (char_u *)fix_fname((char *)(*ffname));     // expand to full path
@@ -4702,7 +4706,6 @@ do_arg_all(
     int keep_tabs                 // keep current tabs, for ":tab drop file"
 )
 {
-  int i;
   char_u      *opened;          // Array of weight for which args are open:
                                 //  0: not opened
                                 //  1: opened in other tab
@@ -4711,6 +4714,7 @@ do_arg_all(
 
   int opened_len;               // length of opened[]
   int use_firstwin = false;     // use first window for arglist
+  bool tab_drop_empty_window = false;
   int split_ret = OK;
   bool p_ea_save;
   alist_T     *alist;           // argument list to be used
@@ -4758,6 +4762,7 @@ do_arg_all(
     win_T *wpnext = NULL;
     tpnext = curtab->tp_next;
     for (win_T *wp = firstwin; wp != NULL; wp = wpnext) {
+      int i;
       wpnext = wp->w_next;
       buf = wp->w_buffer;
       if (buf->b_ffname == NULL
@@ -4863,14 +4868,15 @@ do_arg_all(
   last_curwin = curwin;
   last_curtab = curtab;
   win_enter(lastwin, false);
-  // ":drop all" should re-use an empty window to avoid "--remote-tab"
+  // ":tab drop file" should re-use an empty window to avoid "--remote-tab"
   // leaving an empty tab page when executed locally.
   if (keep_tabs && BUFEMPTY() && curbuf->b_nwindows == 1
       && curbuf->b_ffname == NULL && !curbuf->b_changed) {
     use_firstwin = true;
+    tab_drop_empty_window = true;
   }
 
-  for (i = 0; i < count && i < opened_len && !got_int; i++) {
+  for (int i = 0; i < count && !got_int; i++) {
     if (alist == &global_alist && i == global_alist.al_ga.ga_len - 1) {
       arg_had_last = true;
     }
@@ -4890,6 +4896,10 @@ do_arg_all(
         }
       }
     } else if (split_ret == OK) {
+      // trigger events for tab drop
+      if (tab_drop_empty_window && i == count - 1) {
+        autocmd_no_enter--;
+      }
       if (!use_firstwin) {              // split current window
         p_ea_save = p_ea;
         p_ea = true;                    // use space from all windows
@@ -4915,6 +4925,9 @@ do_arg_all(
                       || bufIsChanged(curwin->w_buffer))
                      ? ECMD_HIDE : 0) + ECMD_OLDBUF,
                     curwin);
+      if (tab_drop_empty_window && i == count - 1) {
+        autocmd_no_enter++;
+      }
       if (use_firstwin) {
         autocmd_no_leave++;
       }
@@ -5421,7 +5434,7 @@ char_u *buf_spname(buf_T *buf)
     return (char_u *)_("[Scratch]");
   }
   if (buf->b_fname == NULL) {
-    return (char_u *)_("[No Name]");
+    return buf_get_fname(buf);
   }
   return NULL;
 }
@@ -5466,7 +5479,9 @@ int buf_signcols(buf_T *buf)
             curline = sign->lnum;
             linesum = 0;
           }
-          linesum++;
+          if (sign->has_text_or_icon) {
+            linesum++;
+          }
         }
         if (linesum > buf->b_signcols_max) {
           buf->b_signcols_max = linesum;
@@ -5480,6 +5495,16 @@ int buf_signcols(buf_T *buf)
     }
 
     return buf->b_signcols;
+}
+
+// Get "buf->b_fname", use "[No Name]" if it is NULL.
+char_u *buf_get_fname(const buf_T *buf)
+  FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT FUNC_ATTR_NONNULL_ALL
+{
+  if (buf->b_fname == NULL) {
+    return (char_u *)_("[No Name]");
+  }
+  return buf->b_fname;
 }
 
 /*

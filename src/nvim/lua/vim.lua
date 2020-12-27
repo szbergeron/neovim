@@ -36,6 +36,9 @@
 local vim = vim
 assert(vim)
 
+vim.inspect = package.loaded['vim.inspect']
+assert(vim.inspect)
+
 -- Internal-only until comments in #8107 are addressed.
 -- Returns:
 --    {errcode}, {output}
@@ -107,16 +110,13 @@ for s in  (package.cpath..';'):gmatch('[^;]*;') do
 end
 
 function vim._load_package(name)
-  -- tricky: when debugging this function we must let vim.inspect
-  -- module to be loaded first:
-  --local inspect = (name == "vim.inspect") and tostring or vim.inspect
-
   local basename = name:gsub('%.', '/')
   local paths = {"lua/"..basename..".lua", "lua/"..basename.."/init.lua"}
   for _,path in ipairs(paths) do
     local found = vim.api.nvim_get_runtime_file(path, false)
     if #found > 0 then
-      return loadfile(found[1])
+      local f, err = loadfile(found[1])
+      return f or error(err)
     end
   end
 
@@ -124,7 +124,8 @@ function vim._load_package(name)
     local path = "lua/"..trail:gsub('?',basename)
     local found = vim.api.nvim_get_runtime_file(path, false)
     if #found > 0 then
-      return package.loadlib(found[1])
+      local f, err = package.loadlib(found[1])
+      return f or error(err)
     end
   end
   return nil
@@ -260,10 +261,7 @@ end
 -- These are for loading runtime modules lazily since they aren't available in
 -- the nvim binary as specified in executor.c
 local function __index(t, key)
-  if key == 'inspect' then
-    t.inspect = require('vim.inspect')
-    return t.inspect
-  elseif key == 'treesitter' then
+  if key == 'treesitter' then
     t.treesitter = require('vim.treesitter')
     return t.treesitter
   elseif require('vim.uri')[key] ~= nil then
@@ -276,6 +274,9 @@ local function __index(t, key)
   elseif key == 'highlight' then
     t.highlight = require('vim.highlight')
     return t.highlight
+  elseif key == 'F' then
+    t.F = require('vim.F')
+    return t.F
   end
 end
 

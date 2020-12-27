@@ -85,7 +85,7 @@ typedef struct ucmd {
   char_u      *uc_rep;          // The command's replacement string
   long uc_def;                  // The default value for a range/count
   int uc_compl;                 // completion type
-  int uc_addr_type;             // The command's address type
+  cmd_addr_T uc_addr_type;      // The command's address type
   sctx_T uc_script_ctx;         // SCTX where the command was defined
   char_u      *uc_compl_arg;    // completion argument if any
 } ucmd_T;
@@ -1503,10 +1503,6 @@ static char_u * do_one_cmd(char_u **cmdlinep,
       errormsg = (char_u *)_(e_sandbox);
       goto doend;
     }
-    if (restricted != 0 && (ea.argt & RESTRICT)) {
-      errormsg = (char_u *)_("E981: Command not allowed in restricted mode");
-      goto doend;
-    }
     if (!MODIFIABLE(curbuf) && (ea.argt & MODIFY)
         // allow :put in terminals
         && (!curbuf->terminal || ea.cmdidx != CMD_put)) {
@@ -1738,6 +1734,9 @@ static char_u * do_one_cmd(char_u **cmdlinep,
           ea.line2 = 1;
         }
         break;
+      case ADDR_NONE:
+        IEMSG(_("INTERNAL: Cannot use DFLALL with ADDR_NONE"));
+        break;
     }
   }
 
@@ -1877,8 +1876,6 @@ static char_u * do_one_cmd(char_u **cmdlinep,
     case CMD_python3:
     case CMD_pythonx:
     case CMD_pyx:
-    case CMD_pyxdo:
-    case CMD_pyxfile:
     case CMD_return:
     case CMD_rightbelow:
     case CMD_ruby:
@@ -2353,6 +2350,9 @@ int parse_cmd_address(exarg_T *eap, char_u **errormsg, bool silent)
       case ADDR_QUICKFIX:
         eap->line2 = qf_get_cur_valid_idx(eap);
         break;
+      case ADDR_NONE:
+        // Will give an error later if a range is found.
+        break;
     }
     eap->cmd = skipwhite(eap->cmd);
     lnum = get_address(eap, &eap->cmd, eap->addr_type, eap->skip, silent,
@@ -2417,6 +2417,9 @@ int parse_cmd_address(exarg_T *eap, char_u **errormsg, bool silent)
             if (eap->line2 == 0) {
               eap->line2 = 1;
             }
+            break;
+          case ADDR_NONE:
+            // Will give an error later if a range is found.
             break;
         }
         eap->addr_count++;
@@ -2509,12 +2512,8 @@ static void append_command(char_u *cmd)
   STRCAT(IObuff, ": ");
   d = IObuff + STRLEN(IObuff);
   while (*s != NUL && d - IObuff < IOSIZE - 7) {
-    if (
-      enc_utf8 ? (s[0] == 0xc2 && s[1] == 0xa0) :
-      *s == 0xa0) {
-      s +=
-        enc_utf8 ? 2 :
-        1;
+    if (s[0] == 0xc2 && s[1] == 0xa0) {
+      s += 2;
       STRCPY(d, "<a0>");
       d += 4;
     } else
@@ -3708,12 +3707,14 @@ char_u *skip_range(
 // Return MAXLNUM when no Ex address was found.
 static linenr_T get_address(exarg_T *eap,
                             char_u **ptr,
-                            int addr_type,  // flag: one of ADDR_LINES, ...
+                            cmd_addr_T addr_type_arg,
                             int skip,  // only skip the address, don't use it
                             bool silent,  // no errors or side effects
                             int to_other_file,  // flag: may jump to other file
                             int address_count)  // 1 for first, >1 after comma
+  FUNC_ATTR_NONNULL_ALL
 {
+  const int addr_type = addr_type_arg;
   int c;
   int i;
   long n;
@@ -3747,6 +3748,7 @@ static linenr_T get_address(exarg_T *eap,
           lnum = CURRENT_TAB_NR;
           break;
         case ADDR_TABS_RELATIVE:
+        case ADDR_NONE:
           EMSG(_(e_invrange));
           cmd = NULL;
           goto error;
@@ -3786,6 +3788,7 @@ static linenr_T get_address(exarg_T *eap,
           lnum = LAST_TAB_NR;
           break;
         case ADDR_TABS_RELATIVE:
+        case ADDR_NONE:
           EMSG(_(e_invrange));
           cmd = NULL;
           goto error;
@@ -3948,6 +3951,8 @@ static linenr_T get_address(exarg_T *eap,
           case ADDR_QUICKFIX:
             lnum = qf_get_cur_valid_idx(eap);
             break;
+          case ADDR_NONE:
+            break;
         }
       }
 
@@ -4098,6 +4103,9 @@ static char_u *invalid_range(exarg_T *eap)
         if (eap->line2 != 1 && (size_t)eap->line2 > qf_get_size(eap)) {
           return (char_u *)_(e_invrange);
         }
+        break;
+      case ADDR_NONE:
+        // Will give an error elsewhere.
         break;
     }
   }
@@ -4967,7 +4975,8 @@ char_u *get_command_name(expand_T *xp, int idx)
 
 static int uc_add_command(char_u *name, size_t name_len, char_u *rep,
                           uint32_t argt, long def, int flags, int compl,
-                          char_u *compl_arg, int addr_type, int force)
+                          char_u *compl_arg, cmd_addr_T addr_type, bool force)
+  FUNC_ATTR_NONNULL_ARG(1, 3)
 {
   ucmd_T      *cmd = NULL;
   char_u      *p;
@@ -5059,7 +5068,7 @@ fail:
 
 
 static struct {
-  int expand;
+  cmd_addr_T expand;
   char *name;
   char *shortname;
 } addr_type_complete[] =
@@ -5072,7 +5081,7 @@ static struct {
   { ADDR_WINDOWS, "windows", "win" },
   { ADDR_QUICKFIX, "quickfix", "qf" },
   { ADDR_OTHER, "other", "?" },
-  { -1, NULL, NULL }
+  { ADDR_NONE, NULL, NULL }
 };
 
 /*
@@ -5246,7 +5255,7 @@ static void uc_list(char_u *name, size_t name_len)
       } while (len < 8 - over);
 
       // Address Type
-      for (j = 0; addr_type_complete[j].expand != -1; j++) {
+      for (j = 0; addr_type_complete[j].expand != ADDR_NONE; j++) {
         if (addr_type_complete[j].expand != ADDR_LINES
             && addr_type_complete[j].expand == cmd->uc_addr_type) {
           STRCPY(IObuff + len, addr_type_complete[j].shortname);
@@ -5294,7 +5303,8 @@ static void uc_list(char_u *name, size_t name_len)
 
 static int uc_scan_attr(char_u *attr, size_t len, uint32_t *argt, long *def,
                         int *flags, int *complp, char_u **compl_arg,
-                        int *addr_type_arg)
+                        cmd_addr_T *addr_type_arg)
+  FUNC_ATTR_NONNULL_ALL
 {
   char_u      *p;
 
@@ -5431,7 +5441,7 @@ static void ex_command(exarg_T *eap)
   int flags = 0;
   int     compl = EXPAND_NOTHING;
   char_u  *compl_arg = NULL;
-  int addr_type_arg = ADDR_LINES;
+  cmd_addr_T addr_type_arg = ADDR_LINES;
   int has_attr = (eap->arg[0] == '-');
   int name_len;
 
@@ -5568,7 +5578,8 @@ static char_u *uc_split_args(char_u *arg, size_t *lenp)
         break;
       len += 3;       /* "," */
     } else {
-      int charlen = (*mb_ptr2len)(p);
+      const int charlen = utfc_ptr2len(p);
+
       len += charlen;
       p += charlen;
     }
@@ -6089,11 +6100,12 @@ char_u *get_user_cmd_complete(expand_T *xp, int idx)
  * Parse address type argument
  */
 int parse_addr_type_arg(char_u *value, int vallen, uint32_t *argt,
-                        int *addr_type_arg)
+                        cmd_addr_T *addr_type_arg)
+  FUNC_ATTR_NONNULL_ALL
 {
   int i, a, b;
 
-  for (i = 0; addr_type_complete[i].expand != -1; i++) {
+  for (i = 0; addr_type_complete[i].expand != ADDR_NONE; i++) {
     a = (int)STRLEN(addr_type_complete[i].name) == vallen;
     b = STRNCMP(value, addr_type_complete[i].name, vallen) == 0;
     if (a && b) {
@@ -6102,7 +6114,7 @@ int parse_addr_type_arg(char_u *value, int vallen, uint32_t *argt,
     }
   }
 
-  if (addr_type_complete[i].expand == -1) {
+  if (addr_type_complete[i].expand == ADDR_NONE) {
     char_u *err = value;
 
     for (i = 0; err[i] != NUL && !ascii_iswhite(err[i]); i++) {}
@@ -6126,6 +6138,7 @@ int parse_addr_type_arg(char_u *value, int vallen, uint32_t *argt,
  */
 int parse_compl_arg(const char_u *value, int vallen, int *complp,
                     uint32_t *argt, char_u **compl_arg)
+  FUNC_ATTR_NONNULL_ALL
 {
   const char_u *arg = NULL;
   size_t arglen = 0;
@@ -6326,17 +6339,14 @@ static void ex_quit(exarg_T *eap)
   }
 }
 
-/*
- * ":cquit".
- */
+/// ":cquit".
 static void ex_cquit(exarg_T *eap)
 {
+  // this does not always pass on the exit code to the Manx compiler. why?
   getout(eap->addr_count > 0 ? (int)eap->line2 : EXIT_FAILURE);
 }
 
-/*
- * ":qall": try to quit all windows
- */
+/// ":qall": try to quit all windows
 static void ex_quit_all(exarg_T *eap)
 {
   if (cmdwin_type != 0) {
@@ -6624,25 +6634,22 @@ static void ex_hide(exarg_T *eap)
 /// ":stop" and ":suspend": Suspend Vim.
 static void ex_stop(exarg_T *eap)
 {
-  // Disallow suspending in restricted mode (-Z)
-  if (!check_restricted()) {
-    if (!eap->forceit) {
-      autowrite_all();
-    }
-    apply_autocmds(EVENT_VIMSUSPEND, NULL, NULL, false, NULL);
-
-    // TODO(bfredl): the TUI should do this on suspend
-    ui_cursor_goto(Rows - 1, 0);
-    ui_call_grid_scroll(1, 0, Rows, 0, Columns, 1, 0);
-    ui_flush();
-    ui_call_suspend();  // call machine specific function
-
-    ui_flush();
-    maketitle();
-    resettitle();  // force updating the title
-    ui_refresh();  // may have resized window
-    apply_autocmds(EVENT_VIMRESUME, NULL, NULL, false, NULL);
+  if (!eap->forceit) {
+    autowrite_all();
   }
+  apply_autocmds(EVENT_VIMSUSPEND, NULL, NULL, false, NULL);
+
+  // TODO(bfredl): the TUI should do this on suspend
+  ui_cursor_goto(Rows - 1, 0);
+  ui_call_grid_scroll(1, 0, Rows, 0, Columns, 1, 0);
+  ui_flush();
+  ui_call_suspend();  // call machine specific function
+
+  ui_flush();
+  maketitle();
+  resettitle();  // force updating the title
+  ui_refresh();  // may have resized window
+  apply_autocmds(EVENT_VIMRESUME, NULL, NULL, false, NULL);
 }
 
 // ":exit", ":xit" and ":wq": Write file and quite the current window.
@@ -7355,7 +7362,7 @@ static void ex_syncbind(exarg_T *eap)
     topline = curwin->w_topline;
     FOR_ALL_WINDOWS_IN_TAB(wp, curtab) {
       if (wp->w_p_scb && wp->w_buffer) {
-        y = wp->w_buffer->b_ml.ml_line_count - get_scrolloff_value();
+        y = wp->w_buffer->b_ml.ml_line_count - get_scrolloff_value(curwin);
         if (topline > y) {
           topline = y;
         }
@@ -7506,7 +7513,7 @@ void post_chdir(CdScope scope, bool trigger_dirchanged)
   shorten_fnames(true);
 
   if (trigger_dirchanged) {
-    do_autocmd_dirchanged(cwd, scope);
+    do_autocmd_dirchanged(cwd, scope, false);
   }
 }
 
@@ -8043,7 +8050,7 @@ static void ex_redraw(exarg_T *eap)
   RedrawingDisabled = 0;
   p_lz = FALSE;
   validate_cursor();
-  update_topline();
+  update_topline(curwin);
   if (eap->forceit) {
     redraw_all_later(NOT_VALID);
   }
@@ -8055,8 +8062,8 @@ static void ex_redraw(exarg_T *eap)
   RedrawingDisabled = r;
   p_lz = p;
 
-  /* Reset msg_didout, so that a message that's there is overwritten. */
-  msg_didout = FALSE;
+  // Reset msg_didout, so that a message that's there is overwritten.
+  msg_didout = false;
   msg_col = 0;
 
   /* No need to wait after an intentional redraw. */
@@ -8192,10 +8199,11 @@ static void ex_mark(exarg_T *eap)
  */
 void update_topline_cursor(void)
 {
-  check_cursor();               /* put cursor on valid line */
-  update_topline();
-  if (!curwin->w_p_wrap)
+  check_cursor();               // put cursor on valid line
+  update_topline(curwin);
+  if (!curwin->w_p_wrap) {
     validate_cursor();
+  }
   update_curswant();
 }
 
@@ -8273,12 +8281,10 @@ static void ex_normal(exarg_T *eap)
     return;
   }
 
-  /*
-   * vgetc() expects a CSI and K_SPECIAL to have been escaped.  Don't do
-   * this for the K_SPECIAL leading byte, otherwise special keys will not
-   * work.
-   */
-  if (has_mbyte) {
+  // vgetc() expects a CSI and K_SPECIAL to have been escaped.  Don't do
+  // this for the K_SPECIAL leading byte, otherwise special keys will not
+  // work.
+  {
     int len = 0;
 
     /* Count the number of characters to be escaped. */
@@ -8317,9 +8323,8 @@ static void ex_normal(exarg_T *eap)
         check_cursor_moved(curwin);
       }
 
-      exec_normal_cmd(
-          arg != NULL ? arg :
-          eap->arg, eap->forceit ? REMAP_NONE : REMAP_YES, FALSE);
+      exec_normal_cmd(arg != NULL ? arg : eap->arg,
+                      eap->forceit ? REMAP_NONE : REMAP_YES, false);
     } while (eap->addr_count > 0 && eap->line1 <= eap->line2 && !got_int);
   }
 
@@ -9507,7 +9512,7 @@ Dictionary commands_array(buf_T *buf)
     PUT(d, "range", obj);
 
     obj = NIL;
-    for (int j = 0; addr_type_complete[j].expand != -1; j++) {
+    for (int j = 0; addr_type_complete[j].expand != ADDR_NONE; j++) {
       if (addr_type_complete[j].expand != ADDR_LINES
           && addr_type_complete[j].expand == cmd->uc_addr_type) {
         obj = STRING_OBJ(cstr_to_string(addr_type_complete[j].name));

@@ -139,8 +139,9 @@ EXTERN int mod_mask INIT(= 0x0);  // current key modifiers
 EXTERN int cmdline_row;
 
 EXTERN int redraw_cmdline INIT(= false);          // cmdline must be redrawn
+EXTERN bool redraw_mode INIT(= false);            // mode must be redrawn
 EXTERN int clear_cmdline INIT(= false);           // cmdline must be cleared
-EXTERN int mode_displayed INIT(= false);          // mode is being displayed
+EXTERN bool mode_displayed INIT(= false);         // mode is being displayed
 EXTERN int cmdline_star INIT(= false);            // cmdline is crypted
 EXTERN int redrawing_cmdline INIT(= false);       // cmdline is being redrawn
 EXTERN int cmdline_was_last_drawn INIT(= false);  // cmdline was last drawn
@@ -199,7 +200,7 @@ EXTERN int keep_msg_attr INIT(= 0);         // highlight attr for keep_msg
 EXTERN int keep_msg_more INIT(= false);     // keep_msg was set by msgmore()
 EXTERN int need_fileinfo INIT(= false);     // do fileinfo() after redraw
 EXTERN int msg_scroll INIT(= false);        // msg_start() will scroll
-EXTERN int msg_didout INIT(= false);        // msg_outstr() was used in line
+EXTERN bool msg_didout INIT(= false);       // msg_outstr() was used in line
 EXTERN int msg_didany INIT(= false);        // msg_outstr() was used at all
 EXTERN int msg_nowait INIT(= false);        // don't wait for this msg
 EXTERN int emsg_off INIT(= 0);              // don't display errors for now,
@@ -492,9 +493,6 @@ EXTERN int stdout_isatty INIT(= true);
 // volatile because it is used in a signal handler.
 EXTERN volatile int full_screen INIT(= false);
 
-// When started in restricted mode (-Z).
-EXTERN int restricted INIT(= false);
-
 /// Non-zero when only "safe" commands are allowed, e.g. when sourcing .exrc or
 /// .vimrc in current directory.
 EXTERN int secure INIT(= false);
@@ -588,8 +586,8 @@ EXTERN int vr_lines_changed INIT(= 0);      // #Lines changed by "gR" so far
 EXTERN int inhibit_delete_count INIT(= 0);
 
 // These flags are set based upon 'fileencoding'.
-// Note that "enc_utf8" is also set for "unicode", because the characters are
-// internally stored as UTF-8 (to avoid trouble with NUL bytes).
+// The characters are internally stored as UTF-8
+// to avoid trouble with NUL bytes.
 # define DBCS_JPN       932     // japan
 # define DBCS_JPNU      9932    // euc-jp
 # define DBCS_KOR       949     // korea
@@ -600,12 +598,6 @@ EXTERN int inhibit_delete_count INIT(= 0);
 # define DBCS_CHTU      9950    // euc-tw
 # define DBCS_2BYTE     1       // 2byte-
 # define DBCS_DEBUG     -1
-
-// mbyte flags that used to depend on 'encoding'. These are now deprecated, as
-// 'encoding' is always "utf-8". Code that use them can be refactored to
-// remove dead code.
-#define enc_utf8 true
-#define has_mbyte true
 
 /// Encoding used when 'fencs' is set to "default"
 EXTERN char_u *fenc_default INIT(= NULL);
@@ -944,6 +936,7 @@ EXTERN char_u e_readonly[] INIT(= N_(
     "E45: 'readonly' option is set (add ! to override)"));
 EXTERN char_u e_readonlyvar[] INIT(= N_(
     "E46: Cannot change read-only variable \"%.*s\""));
+EXTERN char_u e_stringreq[] INIT(= N_("E928: String required"));
 EXTERN char_u e_dictreq[] INIT(= N_("E715: Dictionary required"));
 EXTERN char_u e_toomanyarg[] INIT(= N_(
     "E118: Too many arguments for function: %s"));
@@ -1060,5 +1053,8 @@ typedef enum {
 
 #define MIN_CD_SCOPE  kCdScopeWindow
 #define MAX_CD_SCOPE  kCdScopeGlobal
+
+// Only filled for Win32.
+EXTERN char windowsVersion[20] INIT(= { 0 });
 
 #endif  // NVIM_GLOBALS_H

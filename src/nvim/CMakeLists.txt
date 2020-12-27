@@ -55,6 +55,7 @@ set(GENERATED_UNICODE_TABLES ${GENERATED_DIR}/unicode_tables.generated.h)
 set(VIM_MODULE_FILE ${GENERATED_DIR}/lua/vim_module.generated.h)
 set(LUA_VIM_MODULE_SOURCE ${PROJECT_SOURCE_DIR}/src/nvim/lua/vim.lua)
 set(LUA_SHARED_MODULE_SOURCE ${PROJECT_SOURCE_DIR}/runtime/lua/vim/shared.lua)
+set(LUA_INSPECT_MODULE_SOURCE ${PROJECT_SOURCE_DIR}/runtime/lua/vim/inspect.lua)
 set(CHAR_BLOB_GENERATOR ${GENERATOR_DIR}/gen_char_blob.lua)
 set(LINT_SUPPRESS_FILE ${PROJECT_BINARY_DIR}/errors.json)
 set(LINT_SUPPRESS_URL_BASE "https://raw.githubusercontent.com/neovim/doc/gh-pages/reports/clint")
@@ -241,7 +242,7 @@ if(use_git_version)
   add_custom_target(update_version_stamp ALL
     COMMAND ${LUA_PRG} scripts/update_version_stamp.lua
       ${relbuild}/config/auto/versiondef_git.h
-      "v${NVIM_VERSION_MAJOR}.${NVIM_VERSION_MINOR}.${NVIM_VERSION_PATCH}"
+      "v${NVIM_VERSION_MAJOR}.${NVIM_VERSION_MINOR}.${NVIM_VERSION_PATCH}${NVIM_VERSION_PRERELEASE}"
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
     BYPRODUCTS ${CMAKE_BINARY_DIR}/config/auto/versiondef_git.h)
 else()
@@ -323,10 +324,12 @@ add_custom_command(
   COMMAND ${LUA_PRG} ${CHAR_BLOB_GENERATOR} ${VIM_MODULE_FILE}
       ${LUA_VIM_MODULE_SOURCE} vim_module
       ${LUA_SHARED_MODULE_SOURCE} shared_module
+      ${LUA_INSPECT_MODULE_SOURCE} inspect_module
   DEPENDS
     ${CHAR_BLOB_GENERATOR}
     ${LUA_VIM_MODULE_SOURCE}
     ${LUA_SHARED_MODULE_SOURCE}
+    ${LUA_INSPECT_MODULE_SOURCE}
 )
 
 list(APPEND NVIM_GENERATED_SOURCES
@@ -442,7 +445,7 @@ list(APPEND NVIM_LINK_LIBRARIES
   ${LIBTERMKEY_LIBRARIES}
   ${UNIBILIUM_LIBRARIES}
   ${UTF8PROC_LIBRARIES}
-  ${TREESITTER_LIBRARIES}
+  ${TreeSitter_LIBRARIES}
   ${CMAKE_THREAD_LIBS_INIT}
 )
 
@@ -614,14 +617,14 @@ if(CLANG_ASAN_UBSAN)
   message(STATUS "Enabling Clang address sanitizer and undefined behavior sanitizer for nvim.")
   check_c_compiler_flag(-fno-sanitize-recover=all SANITIZE_RECOVER_ALL)
   if(SANITIZE_RECOVER_ALL)
-    if(TRAVIS_CI_BUILD)
+    if(CI_BUILD)
       # Try to recover from all sanitize issues so we get reports about all failures
       set(SANITIZE_RECOVER -fsanitize-recover=all)     # Clang 3.6+
     else()
       set(SANITIZE_RECOVER -fno-sanitize-recover=all)  # Clang 3.6+
     endif()
   else()
-    if(TRAVIS_CI_BUILD)
+    if(CI_BUILD)
       # Try to recover from all sanitize issues so we get reports about all failures
       set(SANITIZE_RECOVER -fsanitize-recover)         # Clang 3.5-
     else()
