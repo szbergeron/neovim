@@ -12,6 +12,9 @@ endfunc
 " Command to check for the presence of a working option.
 command -nargs=1 CheckOption call CheckOption(<f-args>)
 func CheckOption(name)
+  if !exists('&' .. a:name)
+    throw 'Checking for non-existent option ' .. a:name
+  endif
   if !exists('+' .. a:name)
     throw 'Skipped: ' .. a:name .. ' option not supported'
   endif
@@ -105,3 +108,30 @@ func CheckNotMSWindows()
     throw 'Skipped: does not work on MS-Windows'
   endif
 endfunc
+
+" Command to check for satisfying any of the conditions.
+" e.g. CheckAnyOf Feature:bsd Feature:sun Linux
+command -nargs=+ CheckAnyOf call CheckAnyOf(<f-args>)
+func CheckAnyOf(...)
+  let excp = []
+  for arg in a:000
+    try
+      exe 'Check' .. substitute(arg, ':', ' ', '')
+      return
+    catch /^Skipped:/
+      let excp += [substitute(v:exception, '^Skipped:\s*', '', '')]
+    endtry
+  endfor
+  throw 'Skipped: ' .. join(excp, '; ')
+endfunc
+
+" Command to check for satisfying all of the conditions.
+" e.g. CheckAllOf Unix Gui Option:ballooneval
+command -nargs=+ CheckAllOf call CheckAllOf(<f-args>)
+func CheckAllOf(...)
+  for arg in a:000
+    exe 'Check' .. substitute(arg, ':', ' ', '')
+  endfor
+endfunc
+
+" vim: shiftwidth=2 sts=2 expandtab

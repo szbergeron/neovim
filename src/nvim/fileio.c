@@ -1644,17 +1644,13 @@ failed:
     save_file_ff(curbuf);
     // If editing a new file: set 'fenc' for the current buffer.
     // Also for ":read ++edit file".
-    set_string_option_direct((char_u *)"fenc", -1, fenc,
-        OPT_FREE | OPT_LOCAL, 0);
+    set_string_option_direct("fenc", -1, fenc, OPT_FREE | OPT_LOCAL, 0);
   }
   if (fenc_alloced)
     xfree(fenc);
 # ifdef HAVE_ICONV
   if (iconv_fd != (iconv_t)-1) {
     iconv_close(iconv_fd);
-#  ifndef __clang_analyzer__
-    iconv_fd = (iconv_t)-1;
-#  endif
   }
 # endif
 
@@ -2005,7 +2001,7 @@ void set_forced_fenc(exarg_T *eap)
 {
   if (eap->force_enc != 0) {
     char_u *fenc = enc_canonize(eap->cmd + eap->force_enc);
-    set_string_option_direct((char_u *)"fenc", -1, fenc, OPT_FREE|OPT_LOCAL, 0);
+    set_string_option_direct("fenc", -1, fenc, OPT_FREE|OPT_LOCAL, 0);
     xfree(fenc);
   }
 }
@@ -2032,7 +2028,7 @@ static char_u *next_fenc(char_u **pp, bool *alloced)
     r = enc_canonize(*pp);
     *pp += STRLEN(*pp);
   } else {
-    r = vim_strnsave(*pp, (int)(p - *pp));
+    r = vim_strnsave(*pp, p - *pp);
     *pp = p + 1;
     p = enc_canonize(r);
     xfree(r);
@@ -4284,7 +4280,7 @@ char *modname(const char *fname, const char *ext, bool prepend_dot)
   if (fname == NULL || *fname == NUL) {
     retval = xmalloc(MAXPATHL + extlen + 3);  // +3 for PATHSEP, "_" (Win), NUL
     if (os_dirname((char_u *)retval, MAXPATHL) == FAIL
-        || (fnamelen = strlen(retval)) == 0) {
+        || strlen(retval) == 0) {
       xfree(retval);
       return NULL;
     }
@@ -4564,11 +4560,12 @@ int vim_rename(const char_u *from, const char_u *to)
 
       if (!os_path_exists(tempname)) {
         if (os_rename(from, tempname) == OK) {
-          if (os_rename(tempname, to) == OK)
+          if (os_rename(tempname, to) == OK) {
             return 0;
-          /* Strange, the second step failed.  Try moving the
-           * file back and return failure. */
-          os_rename(tempname, from);
+          }
+          // Strange, the second step failed.  Try moving the
+          // file back and return failure.
+          (void)os_rename(tempname, from);
           return -1;
         }
         /* If it fails for one temp name it will most likely fail
@@ -4675,7 +4672,6 @@ check_timestamps(
 )
 {
   int didit = 0;
-  int n;
 
   /* Don't check timestamps while system() or another low-level function may
    * cause us to lose and gain focus. */
@@ -4703,7 +4699,7 @@ check_timestamps(
       if (buf->b_nwindows > 0) {
         bufref_T bufref;
         set_bufref(&bufref, buf);
-        n = buf_check_timestamp(buf, focus);
+        const int n = buf_check_timestamp(buf);
         if (didit < n) {
           didit = n;
         }
@@ -4773,11 +4769,7 @@ static int move_lines(buf_T *frombuf, buf_T *tobuf)
  * return 2 if a message has been displayed.
  * return 0 otherwise.
  */
-int
-buf_check_timestamp(
-    buf_T *buf,
-    int focus               /* called for GUI focus event */
-)
+int buf_check_timestamp(buf_T *buf)
   FUNC_ATTR_NONNULL_ALL
 {
   int retval = 0;
@@ -4956,11 +4948,11 @@ buf_check_timestamp(
         (void)msg_end();
         if (emsg_silent == 0) {
           ui_flush();
-          /* give the user some time to think about it */
-          os_delay(1000L, true);
+          // give the user some time to think about it
+          os_delay(1004L, true);
 
-          /* don't redraw and erase the message */
-          redraw_cmdline = FALSE;
+          // don't redraw and erase the message
+          redraw_cmdline = false;
         }
       }
       already_warned = TRUE;
@@ -5085,7 +5077,8 @@ void buf_reload(buf_T *buf, int orig_mode)
         // Mark all undo states as changed.
         u_unchanged(curbuf);
       }
-      buf_updates_unregister_all(curbuf);
+      buf_updates_unload(curbuf, true);
+      curbuf->b_mod_set = true;
     }
   }
   xfree(ea.cmd);

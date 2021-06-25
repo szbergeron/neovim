@@ -375,7 +375,7 @@ int main(int argc, char **argv)
     // Does ":filetype plugin indent on".
     filetype_maybe_enable();
     // Sources syntax/syntax.vim, which calls `:filetype on`.
-    syn_maybe_on();
+    syn_maybe_enable();
   }
 
   // Read all the plugin files.
@@ -1101,11 +1101,7 @@ static void command_line_scan(mparm_T *parmp)
 
               size_t s_size = STRLEN(a) + 9;
               char *s = xmalloc(s_size);
-              if (path_with_extension(a, "lua")) {
-                snprintf(s, s_size, "luafile %s", a);
-              } else {
-                snprintf(s, s_size, "so %s", a);
-              }
+              snprintf(s, s_size, "so %s", a);
               parmp->cmds_tofree[parmp->n_commands] = true;
               parmp->commands[parmp->n_commands++] = s;
             } else {
@@ -1367,7 +1363,8 @@ static void load_plugins(void)
 {
   if (p_lpl) {
     char_u *rtp_copy = NULL;
-    char_u *const plugin_pattern = (char_u *)"plugin/**/*.vim";  // NOLINT
+    char_u *const plugin_pattern_vim = (char_u *)"plugin/**/*.vim";  // NOLINT
+    char_u *const plugin_pattern_lua = (char_u *)"plugin/**/*.lua";  // NOLINT
 
     // First add all package directories to 'runtimepath', so that their
     // autoload directories can be found.  Only if not done already with a
@@ -1380,7 +1377,10 @@ static void load_plugins(void)
     }
 
     source_in_path(rtp_copy == NULL ? p_rtp : rtp_copy,
-                   plugin_pattern,
+                   plugin_pattern_vim,
+                   DIP_ALL | DIP_NOAFTER);
+    source_in_path(rtp_copy == NULL ? p_rtp : rtp_copy,
+                   plugin_pattern_lua,
                    DIP_ALL | DIP_NOAFTER);
     TIME_MSG("loading plugins");
     xfree(rtp_copy);
@@ -1392,7 +1392,8 @@ static void load_plugins(void)
     }
     TIME_MSG("loading packages");
 
-    source_runtime(plugin_pattern, DIP_ALL | DIP_AFTER);
+    source_runtime(plugin_pattern_vim, DIP_ALL | DIP_AFTER);
+    source_runtime(plugin_pattern_lua, DIP_ALL | DIP_AFTER);
     TIME_MSG("loading after plugins");
   }
 }
@@ -1404,9 +1405,9 @@ static void load_plugins(void)
 static void handle_quickfix(mparm_T *paramp)
 {
   if (paramp->edit_type == EDIT_QF) {
-    if (paramp->use_ef != NULL)
-      set_string_option_direct((char_u *)"ef", -1,
-          paramp->use_ef, OPT_FREE, SID_CARG);
+    if (paramp->use_ef != NULL) {
+      set_string_option_direct("ef", -1, paramp->use_ef, OPT_FREE, SID_CARG);
+    }
     vim_snprintf((char *)IObuff, IOSIZE, "cfile %s", p_ef);
     if (qf_init(NULL, p_ef, p_efm, true, IObuff, p_menc) < 0) {
       msg_putchar('\n');
@@ -1810,7 +1811,7 @@ static bool do_user_initialization(void)
 
   char_u *init_lua_path = (char_u *)stdpaths_user_conf_subpath("init.lua");
   if (os_path_exists(init_lua_path)
-      && nlua_exec_file((const char *)init_lua_path)) {
+      && do_source(init_lua_path, true, DOSO_VIMRC)) {
     os_setenv("MYVIMRC", (const char *)init_lua_path, 1);
     char_u *vimrc_path = (char_u *)stdpaths_user_conf_subpath("init.vim");
 
@@ -1883,12 +1884,8 @@ static void source_startup_scripts(const mparm_T *const parmp)
         || strequal(parmp->use_vimrc, "NORC")) {
       // Do nothing.
     } else {
-      if (path_with_extension(parmp->use_vimrc, "lua")) {
-        nlua_exec_file(parmp->use_vimrc);
-      } else {
-        if (do_source((char_u *)parmp->use_vimrc, false, DOSO_NONE) != OK) {
-          EMSG2(_("E282: Cannot read from \"%s\""), parmp->use_vimrc);
-        }
+      if (do_source((char_u *)parmp->use_vimrc, false, DOSO_NONE) != OK) {
+        EMSG2(_("E282: Cannot read from \"%s\""), parmp->use_vimrc);
       }
     }
   } else if (!silent_mode) {
@@ -2006,7 +2003,7 @@ static void version(void)
   info_message = TRUE;  // use mch_msg(), not mch_errmsg()
   list_version();
   msg_putchar('\n');
-  msg_didout = false;
+  msg_didout = FALSE;
 }
 
 /// Prints help message for "nvim -h" or "nvim --help".
@@ -2044,7 +2041,6 @@ static void usage(void)
   mch_msg(_("  -u <config>           Use this config file\n"));
   mch_msg(_("  -v, --version         Print version information\n"));
   mch_msg(_("  -V[N][file]           Verbose [level][file]\n"));
-  mch_msg(_("  -Z                    Restricted mode\n"));
   mch_msg("\n");
   mch_msg(_("  --api-info            Write msgpack-encoded API metadata to stdout\n"));
   mch_msg(_("  --embed               Use stdin/stdout as a msgpack-rpc channel\n"));
