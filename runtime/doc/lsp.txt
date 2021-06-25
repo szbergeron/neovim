@@ -1840,6 +1840,9 @@ get_lines({uri}, {rows})                            *vim.lsp.util.get_lines()*
                 Return: ~
                     table<number string> a table mapping rows to lines
 
+get_markdown_fences()                     *vim.lsp.util.get_markdown_fences()*
+                TODO: Documentation
+
 get_progress_messages()                 *vim.lsp.util.get_progress_messages()*
                 TODO: Documentation
 
